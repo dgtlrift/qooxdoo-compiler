@@ -22,15 +22,11 @@
  * *********************************************************************** */
 
 var path = require("path");
-require("@qooxdoo/framework");
+
 var fs = require("fs");
-var util = require("../util");
 var jsonlint = require("jsonlint");
-
-const readFile = util.promisify(fs.readFile);
-
-require("./SourceTarget");
-
+const {promisify} = require("util");
+const readFile = promisify(fs.readFile);
 /**
  * Generates TypeScript .d.ts files
  */
@@ -163,7 +159,7 @@ qx.Class.define("qx.tool.compiler.targets.TypeScriptWriter", {
      * @async
      */
     writeBase: function() {
-      return readFile(path.join(__dirname, "TypeScriptWriter-base_declaration.txt"), "UTF-8")
+      return readFile(path.join(qx.tool.cli.commands.Command.prototype.getTemplateDir(), "TypeScriptWriter-base_declaration.txt"), "UTF-8")
         .then(content => this.write(content));
     },
 

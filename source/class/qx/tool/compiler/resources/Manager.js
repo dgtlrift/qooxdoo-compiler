@@ -24,7 +24,7 @@
 
 var path = require("upath");
 
-var log = require("../util").createLog("resource-manager");
+var log = qx.tool.utils.LogManager.createLog("resource-manager");
 
 /**
  * Analyses library resources, collecting information into a cached database
@@ -36,8 +36,7 @@ qx.Class.define("qx.tool.compiler.resources.Manager", {
   /**
    * Constructor
    *
-   * @param dbFilename
-   *          {String?} database filename, default is "resource-db.json"
+   * @param analyser {qx.tool.compiler.Analyser}
    */
   construct: function(analyser) {
     this.base(arguments);
@@ -48,7 +47,8 @@ qx.Class.define("qx.tool.compiler.resources.Manager", {
       new qx.tool.compiler.resources.MetaLoader()
     ];
     this.__converters = [
-      new qx.tool.compiler.resources.ScssConverter()
+      new qx.tool.compiler.resources.ScssConverter(),
+      new qx.tool.compiler.resources.ScssIncludeConverter()
     ];
   },
 
@@ -215,8 +215,6 @@ qx.Class.define("qx.tool.compiler.resources.Manager", {
     /**
      * Scans all libraries looking for resources; this does not analyse the
      * files, simply compiles the list
-     *
-     * @param callback
      */
     async findAllResources() {
       var t = this;
@@ -349,17 +347,17 @@ qx.Class.define("qx.tool.compiler.resources.Manager", {
      * 
      * @param srcPath {String} the resource name, with or without a namespace prefix
      * @param create {Boolean?} if true the asset will be created if it does not exist
+     * @param isThemeFile {Boolean?} if true the asset will be expected to be in the theme folder
      * @return {Asset?} the asset, if found
      */
-    getAsset(srcPath, create) {
+    getAsset(srcPath, create, isThemeFile) {
       let library = this.findLibraryForResource(srcPath);
       if (!library) {
         this.warn("Cannot find library for " + srcPath);
         return null;
       }
 
-
-      let resourceDir = path.join(library.getRootDir(), library.getResourcePath());
+      let resourceDir = path.join(library.getRootDir(), isThemeFile ? library.getThemePath() : library.getResourcePath());
       srcPath = path.relative(resourceDir, path.isAbsolute(srcPath)?srcPath:path.join(resourceDir, srcPath));
       let asset = this.__assets[library.getNamespace() + ":" + srcPath];
       if (!asset && create) {
@@ -456,5 +454,3 @@ qx.Class.define("qx.tool.compiler.resources.Manager", {
     }
   }
 });
-
-module.exports = qx.tool.compiler.resources.Manager;

@@ -16,10 +16,6 @@
      * Christian Boulanger (info@bibliograph.org, @cboulanger)
 
 ************************************************************************ */
-
-require("@qooxdoo/framework");
-require("../../utils/Utils");
-
 const fs = qx.tool.utils.Promisify.fs;
 const process = require("process");
 const child_process = require("child_process");
@@ -30,37 +26,29 @@ const replace_in_file = require("replace-in-file");
 /**
  * Base class for commands
  */
-/*
-  * @ignore qx.tool.$$resourceDir
-  * @ignore qx.tool.$$rootDir
-  */
 qx.Class.define("qx.tool.cli.commands.Command", {
   extend: qx.core.Object,
-  
-  statics:{
-    /**
-     * The path to the directory containing the templates
-     */
-    TEMPLATE_DIR: path.join(qx.tool.$$resourceDir, "cli/templates"),
-    
-    /**
-     * The path to the node_modules dir
-     */
-    NODE_MODULES_DIR: path.join(qx.tool.$$rootDir, "node_modules")
-  },
 
   construct: function(argv) {
     this.base(arguments);
     this.argv = argv;
-    if (argv.verbose) {
-      qx.tool.cli.LogAppender.setMinLevel("debug");
+  },
+
+  properties: {
+    /**
+     * A reference to the current compilerApi instance
+     * @var {qx.tool.cli.api.CompilerApi}
+     */
+    compilerApi: {
+      check: "qx.tool.cli.api.CompilerApi",
+      nullable: true
     }
   },
-  
+
   members: {
     argv: null,
     compileJs: null,
-    
+
     async process() {
       let argv = this.argv;
       if (argv.set) {
@@ -76,9 +64,21 @@ qx.Class.define("qx.tool.cli.commands.Command", {
           }
         });
       }
-      
+
       // check if we have to migrate files
       await (new qx.tool.cli.commands.package.Migrate(this.argv)).process(true);
+    },
+
+    /**
+     * This is to notify the commands after loading the full args.
+     * The commands can overload special arg arguments here.
+     * e.g. Deploy will will overload the target.
+     *
+     * @param {*} argv : args to procvess
+     *
+     */
+    processArgs: function(argv) {
+      // Nothing
     },
 
     /**
@@ -95,15 +95,27 @@ qx.Class.define("qx.tool.cli.commands.Command", {
      */
     getProjectData : async function() {
       let qooxdooJsonPath = path.join(process.cwd(), qx.tool.config.Registry.config.fileName);
-      let data = {};
+      let data = {
+        libraries: [],
+        applications: []
+      };
       if (await fs.existsAsync(qooxdooJsonPath)) {
-        data = await qx.tool.utils.Json.loadJsonAsync(qooxdooJsonPath);
-      } else {
-        if (await fs.existsAsync(path.join(process.cwd(), qx.tool.config.Manifest.config.fileName))) {
-          data.libraries = [{path : "."}];
+        let qooxdooJson = await qx.tool.utils.Json.loadJsonAsync(qooxdooJsonPath);
+        if (qx.lang.Type.isArray(qooxdooJson.libraries)) {
+          data.libraries = qooxdooJson.libraries;
         }
-        if (await fs.existsAsync(path.join(process.cwd(), qx.tool.config.Compile.config.fileName))) {
-          data.applications = [{path : "."}];
+        if (qx.lang.Type.isArray(qooxdooJson.applications)) {
+          data.applications = qooxdooJson.applications;
+        }
+      }
+      if (await fs.existsAsync(path.join(process.cwd(), qx.tool.config.Manifest.config.fileName))) {
+        if (!data.libraries.find(lib => lib.path === ".")) {
+          data.libraries.push({path : "."});
+        }
+      }
+      if (await fs.existsAsync(path.join(process.cwd(), qx.tool.config.Compile.config.fileName))) {
+        if (!data.applications.find(app => app.path === ".")) {
+          data.applications.push({path : "."});
         }
       }
       return data;
@@ -113,7 +125,7 @@ qx.Class.define("qx.tool.cli.commands.Command", {
      * Returns the path to the current library. If the current directory contains several libraries,
      * the first one found is returned.
      * @throws {Error} Throws an error if no library can be found.
-     * @return {Promise<String>)} A promise that resolves with the absolute path to the library
+     * @return {String} A promise that resolves with the absolute path to the library
      */
     getLibraryPath: async function() {
       let {libraries} = await this.getProjectData();
@@ -176,13 +188,15 @@ qx.Class.define("qx.tool.cli.commands.Command", {
      * @return {Promise<*|never|string>}
      */
     getGlobalQxPath: async function() {
-      // Config override
-      let cfg = await qx.tool.cli.ConfigDb.getInstance();
-      let dir = cfg.db("qx.library");
-      if (dir) {
-        let manifestPath = path.join(dir, qx.tool.config.Manifest.config.fileName);
-        if (await fs.existsAsync(manifestPath)) {
-          return dir;
+      if (!this.argv["block-global-framework"]) {
+        // Config override
+        let cfg = await qx.tool.cli.ConfigDb.getInstance();
+        let dir = cfg.db("qx.library");
+        if (dir) {
+          let manifestPath = path.join(dir, qx.tool.config.Manifest.config.fileName);
+          if (await fs.existsAsync(manifestPath)) {
+            return dir;
+          }
         }
       }
       // This project's node_modules
@@ -261,7 +275,7 @@ qx.Class.define("qx.tool.cli.commands.Command", {
         });
         exe.on("close", code => {
           if (code !== 0) {
-            let message = `Error executing ${cmd.join(" ")}. Use --verbose to see what went wrong.`;
+            let message = `Error executing '${cmd} ${args.join(" ")}'. Use --verbose to see what went wrong.`;
             throw new qx.tool.utils.Utils.UserError(message);
           } else {
             resolve(0);
@@ -292,11 +306,13 @@ qx.Class.define("qx.tool.cli.commands.Command", {
     },
 
     /**
-     * Returns the absolute path to the tempate directory
+     * Returns the absolute path to the template directory
      * @return {String}
      */
     getTemplateDir : function() {
-      return qx.tool.cli.commands.Command.TEMPLATE_DIR;
+      let dir = qx.util.ResourceManager.getInstance().toUri("qx/tool/cli/templates/template_vars.js");
+      dir = path.dirname(dir);
+      return dir;
     },
 
     /**
@@ -341,12 +357,9 @@ qx.Class.define("qx.tool.cli.commands.Command", {
 
     /**
      * Migrate files/schemas or announces the migration.
-     * @param {[]} fileList
-     *    Array containing arrays of [new name, old name]
-     * @param {[]} replaceInFilesArr
-     *    Optional array containing objects compatible with https://github.com/adamreisnz/replace-in-file
-     * @param {Boolean} annouceOnly
-     *    If true, annouce the migration. If false (default), just apply it.
+     * @param {String[]} fileList Array containing arrays of [new name, old name]
+     * @param {String[]} replaceInFilesArr Optional array containing objects compatible with https://github.com/adamreisnz/replace-in-file
+     * @param {Boolean} annouceOnly If true, annouce the migration. If false (default), just apply it.
      * @private
      */
     async migrate(fileList, replaceInFilesArr=[], annouceOnly=false) {

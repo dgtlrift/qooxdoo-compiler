@@ -1,19 +1,26 @@
+# local files
 .DS_Store
 .eslintcache
 .project
 .settings/
 .idea/
 notused/
-node_modules/
 .cache
-.c9
 .vscode
-qooxdoo
-foo*/
-.package-cache.json
-myapp
 *~
+
+# node
+node_modules/
+
+# qooxdoo
+.package-cache.json
+html/
+lib/
 qooxdoo/
 compiled/
 qx_packages/
-/test/transpiled
+# test apps
+foo*
+test/qx
+tmp
+source/class/qx/tool/compiler/Version.js

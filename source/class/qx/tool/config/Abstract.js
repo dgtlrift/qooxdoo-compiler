@@ -34,7 +34,7 @@ qx.Class.define("qx.tool.config.Abstract", {
     /**
      * The base URL of all json schema definitions
      */
-    schemaBaseUrl: "https://raw.githubusercontent.com/qooxdoo/qooxdoo-compiler/master/source/resource/qx/tool/schema"
+    schemaBaseUrl: "https://qooxdoo.org/schema"
   },
 
   construct: function(config) {
@@ -173,7 +173,7 @@ qx.Class.define("qx.tool.config.Abstract", {
         if (this.isWarnOnly()) {
           qx.tool.compiler.Console.warn(msg);
         } else {
-          throw new Error(msg);
+          throw new qx.tool.utils.Utils.UserError(msg);
         }
       }
     },
@@ -185,7 +185,7 @@ qx.Class.define("qx.tool.config.Abstract", {
     getDataPath() {
       return path.join(this.getBaseDir(), this.getFileName());
     },
-    
+
     /**
      * The path to the configuration file, relative to CWD
      */
@@ -207,9 +207,8 @@ qx.Class.define("qx.tool.config.Abstract", {
      * Path to the schema json file in the file system
      * @return {String}
      */
-    /* @ignore qx.tool.$$resourceDir */
     getSchemaPath() {
-      return path.join(qx.tool.$$resourceDir, "schema", this._getSchemaFileName());
+      return qx.util.ResourceManager.getInstance().toUri(`qx/tool/schema/${this._getSchemaFileName()}`);
     },
 
     /**
@@ -281,10 +280,11 @@ qx.Class.define("qx.tool.config.Abstract", {
       // load schema if validation is enabled
       if (this.isValidate() && this.getVersion() !== null) {
         if (!this.__schema) {
-          if (!fs.existsSync(this.getSchemaPath())) {
+          let s = this.getSchemaPath();
+          if (!fs.existsSync(s)) {
             throw new Error(`No schema file exists at ${this.getSchemaPath()}`);
           }
-          this.__schema = await qx.tool.utils.Json.loadJsonAsync(this.getSchemaPath());
+          this.__schema = await qx.tool.utils.Json.loadJsonAsync(s);
         }
         // check initial data
         let dataSchemaInfo = qx.tool.utils.Json.getSchemaInfo(data);
@@ -351,7 +351,7 @@ qx.Class.define("qx.tool.config.Abstract", {
      */
     setValue(prop_path, value, options) {
       let originalValue = this.getValue(prop_path, options);
-      set_value(this.getData(), prop_path, value, options);
+      set_value(this.getData(), prop_path, value, {preservePaths:false});
       try {
         this.validate();
       } catch (e) {
@@ -359,7 +359,7 @@ qx.Class.define("qx.tool.config.Abstract", {
         if (originalValue === undefined) {
           unset_value(this.getData(), prop_path);
         } else {
-          set_value(this.getData(), prop_path, originalValue, options);
+          set_value(this.getData(), prop_path, originalValue, {preservePaths:false});
         }
         // throw
         throw e;
@@ -381,7 +381,7 @@ qx.Class.define("qx.tool.config.Abstract", {
         this.validate();
       } catch (e) {
         // revert value
-        set_value(this.getData(), prop_path, originalValue, options);
+        set_value(this.getData(), prop_path, originalValue, {preservePaths:false});
         // throw
         throw e;
       }

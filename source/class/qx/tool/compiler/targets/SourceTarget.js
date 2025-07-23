@@ -19,16 +19,10 @@
  *      * John Spackman (john.spackman@zenesis.com, @johnspackman)
  *
  * ************************************************************************/
-
-var path = require("upath");
-require("@qooxdoo/framework");
-
-require("./Target");
-
 /**
  * Compiles a target where source files and resources are loaded in place
  */
-module.exports = qx.Class.define("qx.tool.compiler.targets.SourceTarget", {
+qx.Class.define("qx.tool.compiler.targets.SourceTarget", {
   extend: qx.tool.compiler.targets.Target,
 
   properties: {
@@ -45,38 +39,12 @@ module.exports = qx.Class.define("qx.tool.compiler.targets.SourceTarget", {
     /*
      * @Override
      */
-    _writeApplication: async function(compileInfo) {
-      var t = this;
-      var application = compileInfo.application;
-
-      var targetUri = t._getOutputRootUri(application);
-      var appRootDir = this.getApplicationRoot(application);
-
-
-      var mapTo = this.getPathMapping(path.join(appRootDir, this.getOutputDir(), "transpiled/"));
-      var sourceUri = mapTo ? mapTo : targetUri + "transpiled/";
-
-      // ResourceUri does not have a trailing "/" because qx.util.ResourceManager.toUri always adds one
-      mapTo = this.getPathMapping(path.join(appRootDir, this.getOutputDir(), "resource"));
-      var resourceUri = mapTo ? mapTo : targetUri + "resource";
-
-
-      application.getRequiredLibraries().forEach(ns => {
-        compileInfo.configdata.libraries[ns] = {
-          sourceUri: sourceUri,
-          resourceUri: resourceUri
-        };
-      });
-
-      var _arguments = arguments;
+    async _writeApplication() {
       if (this.getCopyResources()) {
-        await t._syncAssets(compileInfo)
-          .then(() =>
-            t.base(_arguments, compileInfo)
-          );
-      } else {
-        await t.base(_arguments, compileInfo);
+        let appMeta = this.getAppMeta();
+        await appMeta.syncAssets();
       }
+      return await this.base(arguments);
     },
 
     /*

@@ -21,11 +21,7 @@ const process = require("process");
 const express = require("express");
 const http = require("http");
 const fs = qx.tool.utils.Promisify.fs;
-
 require("app-module-path").addPath(process.cwd() + "/node_modules");
-
-require("./Compile");
-
 /**
  * Compiles the project and serves it up as a web page
  */
@@ -57,20 +53,27 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
 
     getYargsCommand: function() {
       return {
-        command   : "serve [configFile]",
+        command   : "serve",
         describe  : "runs a webserver to run the current application with continuous compilation, using compile.json",
-        builder   : Object.assign(qx.tool.cli.commands.Compile.YARGS_BUILDER, qx.tool.cli.commands.Serve.YARGS_BUILDER)
+        builder   : (() => {
+          let res = Object.assign({}, 
+            qx.tool.cli.commands.Compile.YARGS_BUILDER, 
+            qx.tool.cli.commands.Serve.YARGS_BUILDER
+          );
+          delete res.watch;
+          return res;
+        })()
       };
     }
   },
   events: {
     /**
      * Fired before server start
-     * 
-     *  data: {
-     *    server: the http server
-     *    application: the used express server instance
-     *  }
+     *
+     * The event data is an object with the following properties: 
+     *   server: the http server
+     *   application: the used express server instance
+     *   outputdir: the qooxdoo app output dir
      */
     "beforeStart": "qx.event.type.Data",
     /**
@@ -82,7 +85,7 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
   members: {
     /** @type {qx.tool.utils.Website} the Website instance */
     _website: null,
-    
+
     /*
      * @Override
      */
@@ -91,7 +94,7 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
       this.argv["machine-readable"] = false;
       this.argv["feedback"] = false;
       await this.base(arguments);
-      
+
       // build website if it hasn't been built yet.
       const website = this._website = new qx.tool.utils.Website();
       if (!await fs.existsAsync(website.getTargetDir())) {
@@ -100,14 +103,14 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
       } else if (this.argv.rebuildStartpage) {
         this._website.startWatcher();
       }
-      
+
       await this.runWebServer();
     },
-    
+
     /**
-     * 
+     *
      * returns the showStartpage flag
-     * 
+     *
      */
     showStartpage: function() {
       return this.__showStartpage;
@@ -115,8 +118,6 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
 
     /**
      * Runs the web server
-     * 
-     * @ignore qx.tool.$$resourceDir
      */
     runWebServer: async function() {
       let makers = this.getMakers().filter(maker => maker.getApplications().some(app => app.getStandalone()));
@@ -141,7 +142,7 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
       }
       
       this.__showStartpage = this.argv.showStartpage;
-      if (this.__showStartpage === null) {
+      if ((this.__showStartpage === undefined) || (this.__showStartpage === null)) {
         this.__showStartpage = defaultMaker === null;
       }
       var config = this._getConfig();
@@ -189,7 +190,8 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
         let server = http.createServer(app);
         this.fireDataEvent("beforeStart", {
           server: server,
-          application: app
+          application: app,
+          outputdir: defaultMaker.getTarget().getOutputDir()
         });
         server.on("error", e => {
           if (e.code === "EADDRINUSE") {
@@ -205,7 +207,7 @@ qx.Class.define("qx.tool.cli.commands.Serve", {
         });
       });
     },
-    
+
     __showStartpage: null
 
 

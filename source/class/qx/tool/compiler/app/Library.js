@@ -21,12 +21,11 @@
  * *********************************************************************** */
 
 var path = require("path");
-require("@qooxdoo/framework");
+
 var fs = require("fs");
 var async = require("async");
-var util = require("../util");
 
-var log = util.createLog("library");
+var log = qx.tool.utils.LogManager.createLog("library");
 
 /**
  * A Qooxdoo Library or application; typical usage is to call .loadManifest to configure from
@@ -39,6 +38,7 @@ qx.Class.define("qx.tool.compiler.app.Library", {
     this.base(arguments);
     this.__knownSymbols = {};
     this.__sourceFileExtensions = {};
+    this.__environmentChecks = {};
   },
 
   properties: {
@@ -121,6 +121,7 @@ qx.Class.define("qx.tool.compiler.app.Library", {
     __knownSymbols: null,
     __sourceFileExtensions: null,
     __promiseLoadManifest: null,
+    __environmentChecks: null,
 
     /**
      * Transform for rootDir; converts it to an absolute path
@@ -137,8 +138,7 @@ qx.Class.define("qx.tool.compiler.app.Library", {
     /**
      * Loads the Manifest.json from the directory and uses it to configure
      * properties
-     * @param rootDir
-     * @param cb
+     * @param loadFromDir {String} directory
      */
     loadManifest: function(loadFromDir) {
       if (this.__promiseLoadManifest) {
@@ -161,6 +161,24 @@ qx.Class.define("qx.tool.compiler.app.Library", {
           }
           t.setNamespace(data.provides.namespace);
           t.setVersion(data.info.version);
+          if (data.provides.environmentChecks) {
+            for (var key in data.provides.environmentChecks) {
+              let check = data.provides.environmentChecks[key];
+              let pos = key.indexOf("*");
+              if (pos > -1) {
+                this.__environmentChecks[key] = {
+                  matchString: key.substring(0, pos),
+                  startsWith: true,
+                  className: check
+                };
+              } else {
+                this.__environmentChecks[key] = {
+                  matchString: key,
+                  className: check
+                };
+              }
+            } 
+          }
 
           function fixLibraryPath(dir) {
             let d = path.resolve(rootDir, dir);
@@ -229,7 +247,7 @@ qx.Class.define("qx.tool.compiler.app.Library", {
      * Scans the filing system looking for classes; there are occasions (ie Qooxdoo's qxWeb module)
      * where the class name does not comply with the namespace, this method is used to find those
      * files and also to prepopulate the known symbols list
-     * @param cb(err, classes) returns an array of class names
+     * @param cb {Function} (err, classes) returns an array of class names
      */
     scanForClasses: function(cb) {
       var t = this;
@@ -320,9 +338,10 @@ qx.Class.define("qx.tool.compiler.app.Library", {
     },
 
     /**
-     * Detects the type of a symbol, "class", "resource", "package", or null if not found
+     * Detects the type of a symbol, "class", "resource", "package", "environment", or null if not found
+     *
      * @param {String} name
-     * @return {{symbolType,name,className?}}
+     * @return {{symbolType,name,className}?}
      */
     getSymbolType: function(name) {
       if (!name.length) {
@@ -333,7 +352,45 @@ qx.Class.define("qx.tool.compiler.app.Library", {
       var type = this.__knownSymbols[name];
 
       if (type) {
-        return { symbolType: t.__knownSymbols[name], className: type == "class" ? name : null, name: name };
+        return { 
+          symbolType: t.__knownSymbols[name], 
+          className: type == "class" ? name : null, 
+          name: name 
+        };
+      }
+      
+      function testEnvironment(check) {
+        if (!check) {
+          return null;
+        }
+        let match = false;
+        if (check.startsWith) {
+          match = name.startsWith(check.matchString);
+        } else {
+          match = name == check.matchString;
+        }
+        if (match) {
+          return {
+            symbolType: "environment",
+            className: check.className,
+            name: name 
+          };
+        }
+        return null;
+      }
+      
+      let result = testEnvironment(this.__environmentChecks[name]);
+      if (result) {
+        return result;
+      }
+      for (let key in this.__environmentChecks) {
+        let check = this.__environmentChecks[key];
+        if (check.startsWith) {
+          result = testEnvironment(check);
+          if (result !== null) {
+            return result; 
+          }
+        }
       }
 
       var tmp = name;
@@ -350,6 +407,17 @@ qx.Class.define("qx.tool.compiler.app.Library", {
       }
 
       return null;
+    },
+    
+    /**
+     * Checks whether the classname is an actual class, in this library
+     * 
+     * @param classname {String} classname to look for
+     * @return {Boolean}
+     */
+    isClass(classname) {
+      var type = this.__knownSymbols[classname];
+      return type === "class";
     },
 
     /**
@@ -414,5 +482,3 @@ qx.Class.define("qx.tool.compiler.app.Library", {
     }
   }
 });
-
-module.exports =qx.tool.compiler.app.Library;

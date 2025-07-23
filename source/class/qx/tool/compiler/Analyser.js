@@ -26,19 +26,15 @@
 
 var fs = require("fs");
 var async = require("async");
-require("@qooxdoo/framework");
-var util = require("./util");
+
 var jsonlint = require("jsonlint");
 var hash = require("object-hash");
 
-require("./ClassFile");
-require("./app/Library");
-require("./resources/Manager");
+const {promisify} = require("util");
+const readFile = promisify(fs.readFile);
+const writeFile = promisify(fs.writeFile);
 
-const readFile = util.promisify(fs.readFile);
-const writeFile = util.promisify(fs.writeFile);
-
-var log = util.createLog("analyser");
+var log = qx.tool.utils.LogManager.createLog("analyser");
 
 /**
  * Entry point for analysing source files; maintains a list of known libraries
@@ -62,7 +58,6 @@ qx.Class.define("qx.tool.compiler.Analyser", {
     this.__libraries = [];
     this.__librariesByNamespace = {};
     this.__initialClassesToScan = new qx.tool.utils.IndexedArray();
-    this.__locales = ["en"];
     this.__cldrs = {};
     this.__translations = {};
     this.__classFiles = {};
@@ -124,6 +119,12 @@ qx.Class.define("qx.tool.compiler.Analyser", {
       nullable: false,
       check: "Array"
     },
+    
+    /** Whether and how to mangle private identifiers */
+    manglePrivates: {
+      init: "readable",
+      check: [ "off", "readable", "unreadable" ]
+    },
 
     /** Whether to write line numbers to .po files */
     writePoLineNumbers: {
@@ -179,7 +180,6 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
     __classes: null,
     __initialClassesToScan: null,
-    __locales: null,
     __cldrs: null,
     __translations: null,
 
@@ -293,7 +293,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
      */
     async saveDatabase() {
       log.debug("saving generator database");
-      this.fireDataEvent("saveDatabase", this.__db);
+      await this.fireDataEventAsync("saveDatabase", this.__db);
       await qx.tool.utils.Json.saveJsonAsync(this.getDbFilename(), this.__db)
         .then(() => this.__resManager && this.__resManager.saveDatabase());
     },
@@ -310,10 +310,8 @@ qx.Class.define("qx.tool.compiler.Analyser", {
     /**
      * Parses all the source files recursively until all classes and all
      * dependent classes are loaded
-     *
-     * @param cb
      */
-    analyseClasses: function(cb) {
+    async analyseClasses() {
       var t = this;
       if (!this.__db) {
         this.__db = {};
@@ -349,91 +347,76 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
         compiledClasses[data.classFile.getClassName()] = data;
       });
-
+      
       // Note that it is important to pre-load the classes in all libraries - this is because
       //  Babel plugins MUST be synchronous (ie cannot afford an async lookup of files on disk
       //  in mid parse)
-      async.each(this.__libraries, function(library, cb) {
-        library.scanForClasses(cb);
-      }, function() {
-        var classIndex = 0;
-        var classes = t.__classes = t.__initialClassesToScan.toArray();
+      await qx.tool.utils.Promisify.map(this.__libraries, async library => 
+        qx.tool.utils.Promisify.call(cb => library.scanForClasses(cb))
+      );
 
-        function getConstructDependencies(className) {
-          var deps = [];
-          var info = t.__db.classInfo[className];
-          if (info.dependsOn) {
-            for (var depName in info.dependsOn) {
-              if (info.dependsOn[depName].construct) {
-                deps.push(depName);
-              }
+      var classes = t.__classes = t.__initialClassesToScan.toArray();
+
+      function getConstructDependencies(className) {
+        var deps = [];
+        var info = t.__db.classInfo[className];
+        if (info.dependsOn) {
+          for (var depName in info.dependsOn) {
+            if (info.dependsOn[depName].construct) {
+              deps.push(depName);
             }
           }
-          return deps;
         }
+        return deps;
+      }
 
-        function getIndirectLoadDependencies(className) {
-          var deps = [];
-          var info = t.__db.classInfo[className];
-          if (info && info.dependsOn) {
-            for (var depName in info.dependsOn) {
-              if (info.dependsOn[depName].load) {
-                getConstructDependencies(depName).forEach(function(className) {
-                  deps.push(className);
-                });
-              }
-            }
-          }
-          return deps;
-        }
-
-        async.whilst(
-          /* While */
-          function() {
-            return classIndex < classes.length;
-          },
-          /* Do */
-          function(cb) {
-            t.getClassInfo(classes[classIndex++], (err, dbClassInfo) => {
-              if (dbClassInfo) {
-                var deps = dbClassInfo.dependsOn;
-                for (var depName in deps) {
-                  t._addRequiredClass(depName);
-                }
-              }
-              if (err && err.code === "ENOCLASSFILE") {
-                qx.tool.compiler.Console.error(err.message);
-                err = null;
-              }
-              return cb(err);
-            });
-          },
-          /* Done */
-          function(err) {
-            if (err) {
-              cb && cb(err);
-              return;
-            }
-            classes.forEach(function(className) {
-              var info = t.__db.classInfo[className];
-              var deps = getIndirectLoadDependencies(className);
-              deps.forEach(function(depName) {
-                if (!info.dependsOn) {
-                  info.dependsOn = {};
-                }
-                if (!info.dependsOn[depName]) {
-                  info.dependsOn[depName] = {};
-                }
-                info.dependsOn[depName].load = true;
+      function getIndirectLoadDependencies(className) {
+        var deps = [];
+        var info = t.__db.classInfo[className];
+        if (info && info.dependsOn) {
+          for (var depName in info.dependsOn) {
+            if (info.dependsOn[depName].load) {
+              getConstructDependencies(depName).forEach(function(className) {
+                deps.push(className);
               });
-            });
-            t.removeListenerById(listenerId);
-            analyzeMeta()
-              .then(() => cb())
-              .catch(err => cb(err));
+            }
           }
-        );
+        }
+        return deps;
+      }
+      
+      for (var classIndex = 0; classIndex < classes.length; classIndex++) {
+        try {
+          let dbClassInfo = await qx.tool.utils.Promisify.call(cb => t.getClassInfo(classes[classIndex], cb));
+          if (dbClassInfo) {
+            var deps = dbClassInfo.dependsOn;
+            for (var depName in deps) {
+              t._addRequiredClass(depName);
+            }
+          }
+        } catch (err) {
+          if (err.code === "ENOCLASSFILE") {
+            qx.tool.compiler.Console.error(err.message);
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      classes.forEach(function(className) {
+        var info = t.__db.classInfo[className];
+        var deps = getIndirectLoadDependencies(className);
+        deps.forEach(function(depName) {
+          if (!info.dependsOn) {
+            info.dependsOn = {};
+          }
+          if (!info.dependsOn[depName]) {
+            info.dependsOn[depName] = {};
+          }
+          info.dependsOn[depName].load = true;
+        });
       });
+      t.removeListenerById(listenerId);
 
       function fixupMetaData(classname, meta) {
         function fixupEntry(obj) {
@@ -463,7 +446,8 @@ qx.Class.define("qx.tool.compiler.Analyser", {
       async function updateMetaData(classname, meta) {
         var classEntities = {
           members: {},
-          properties: {}
+          properties: {},
+          events: {}
         };
 
         async function analyseClassEntities(meta, first) {
@@ -474,32 +458,41 @@ qx.Class.define("qx.tool.compiler.Analyser", {
             return;
           }
 
-          [ "members", "properties" ].forEach(entityTypeName => {
+          ["members", "properties", "events"].forEach(entityTypeName => {
             if (!meta[entityTypeName]) {
               return;
             }
 
             for (let entityName in meta[entityTypeName]) {
               let entityMeta = meta[entityTypeName][entityName];
-              if (entityMeta.type === "function" || entityTypeName === "properties") {
+
+              if (entityMeta.type === "function" || entityTypeName === "properties" || entityTypeName === "events") {
                 var entityInfo = classEntities[entityTypeName][entityName];
+
                 if (!entityInfo) {
                   entityInfo = classEntities[entityTypeName][entityName] = {
                     appearsIn: {},
                     overriddenFrom: null,
                     jsdoc: null,
                     abstract: meta.type === "interface",
-                    mixin: meta.type === "mixin",
+                    mixin: meta.type === "mixin" && !first,
                     inherited: !first,
                     access: entityName.startsWith("__") ? "private" : entityName.startsWith("_") ? "protected" : "public"
                   };
                 }
+
+                if (entityMeta.event) {
+                  entityInfo.event = entityMeta.event;
+                }
+
                 if (entityMeta.property) {
                   entityInfo.property = entityMeta.property;
                 }
+
                 if (meta.type === "mixin" && entityInfo.abstract) {
                   entityInfo.mixin = true;
                 }
+
                 if (meta.type !== "interface") {
                   entityInfo.abstract = false;
                 } else {
@@ -513,7 +506,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
                   entityInfo.overriddenFrom = meta.className;
                 }
 
-                if (!entityInfo.jsdoc && hasSignature(entityMeta.jsdoc)) {
+                if (!entityInfo.jsdoc) {
                   entityInfo.jsdoc = entityMeta.jsdoc;
                 }
               }
@@ -586,13 +579,14 @@ qx.Class.define("qx.tool.compiler.Analyser", {
               let propertyMeta = meta.properties[propertyName];
               let upname = qx.lang.String.firstUp(propertyName);
               let type = propertyMeta.check || "any";
-
-              let msg = "Gets the (computed) value of the property <code>" + propertyName + "</code>.\n" +
-                "\n" +
-                "For further details take a look at the property definition: {@link #" + propertyName + "}.";
-              addPropertyAccessor(propertyMeta, "get" + upname, "get", type, null, msg);
-              if (type == "Boolean") {
-                addPropertyAccessor(propertyMeta, "is" + upname, "is", type, null, msg);
+              if (!propertyMeta.group) {
+                let msg = "Gets the (computed) value of the property <code>" + propertyName + "</code>.\n" +
+                  "\n" +
+                  "For further details take a look at the property definition: {@link #" + propertyName + "}.";
+                addPropertyAccessor(propertyMeta, "get" + upname, "get", type, null, msg);
+                if (type == "Boolean") {
+                  addPropertyAccessor(propertyMeta, "is" + upname, "is", type, null, msg);
+                }
               }
 
               addPropertyAccessor(propertyMeta, "set" + upname, "set", null, type,
@@ -609,7 +603,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
                   "For further details take a look at the property definition: {@link #" + propertyName + "}.");
 
               if (propertyMeta.async) {
-                msg = "Returns a {@link qx.Promise} which resolves to the (computed) value of the property <code>" + propertyName + "</code>." +
+                var msg = "Returns a {@link qx.Promise} which resolves to the (computed) value of the property <code>" + propertyName + "</code>." +
                 "\n" +
                 "For further details take a look at the property definition: {@link #" + propertyName + "}.";
                 addPropertyAccessor(propertyMeta, "get" + upname + "Async", "getAsync", "Promise", null, msg);
@@ -653,11 +647,41 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
         await analyseClassEntities(meta, true);
 
+        for (let eventName in classEntities.events) {
+          if (!meta.events) {
+            meta.events = {};
+          }
+          let eventInfo = classEntities.events[eventName];
+          if ((eventInfo.abstract || eventInfo.mixin) && !meta.events[eventInfo]) {
+            let eventMeta = meta.events[eventName] = {
+              type: "event",
+              name: eventName,
+              abstract: Boolean(eventInfo.abstract),
+              mixin: Boolean(eventInfo.mixin),
+              access: eventInfo.access,
+              overriddenFrom: eventInfo.overriddenFrom
+            };
+            if (eventInfo.appearsIn.length) {
+              eventMeta.appearsIn = Object.keys(eventInfo.appearsIn);
+            }
+
+            if (eventInfo.jsdoc) {
+              eventMeta.jsdoc = eventInfo.jsdoc;
+            }
+
+            if (eventInfo.overriddenFrom) {
+              eventMeta.overriddenFrom = eventInfo.overriddenFrom;
+            }
+          }
+        }  
+
         if (meta.properties) {
           for (let propertyName in meta.properties) {
             let propertyMeta = meta.properties[propertyName];
+
             if (propertyMeta.refine) {
               let result = classEntities.properties[propertyName];
+
               if (result) {
                 propertyMeta.overriddenFrom = result.overriddenFrom;
                 propertyMeta.appearsIn = result.appearsIn;
@@ -665,17 +689,18 @@ qx.Class.define("qx.tool.compiler.Analyser", {
               }
             }
           }
-
+  
           for (let propertyName in classEntities.properties) {
             let propertyInfo = classEntities.properties[propertyName];
-            if ((propertyInfo.abstract || propertyInfo.mixin) && !meta.properties[propertyInfo]) {
+            if ((propertyInfo.abstract || propertyInfo.mixin) && !meta.properties[propertyName]) {
               let propertyMeta = meta.properties[propertyName] = {
                 type: "property",
                 name: propertyName,
                 abstract: Boolean(propertyInfo.abstract),
                 mixin: Boolean(propertyInfo.mixin),
                 access: propertyInfo.access,
-                overriddenFrom: propertyInfo.overriddenFrom
+                overriddenFrom: propertyInfo.overriddenFrom,
+                event: propertyInfo.event
               };
               if (propertyInfo.appearsIn.length) {
                 propertyMeta.appearsIn = Object.keys(propertyInfo.appearsIn);
@@ -814,21 +839,20 @@ qx.Class.define("qx.tool.compiler.Analyser", {
           }
         }
 
-        var p = Promise.resolve();
         for (let classname in metaFixupDescendants) {
           if (!compiledClasses[classname] && db.classInfo[classname]) {
-            p = p.then(() => loadMetaData(classname)
-              .then(meta => {
-                if (meta) {
-                  calcDescendants(classname, meta);
-                  toSave[classname] = meta;
-                }
-              }));
+            let meta = await loadMetaData(classname);
+            if (meta) {
+              calcDescendants(classname, meta);
+              toSave[classname] = meta;
+            }
           }
         }
 
-        await p.then(() => Promise.all(Object.keys(toSave).map(classname => saveMetaData(classname, toSave[classname]))));
+        await Promise.all(Object.keys(toSave).map(classname => saveMetaData(classname, toSave[classname])));
       }
+      
+      return await analyzeMeta();
     },
 
     /**
@@ -871,7 +895,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
      * Loads a class
      * @param className {String} the name of the class
      * @param forceScan {Boolean?} true if the class is to be compiled whether it needs it or not (default false)
-     * @param cb(err, DbClassInfo)
+     * @param cb {Function} (err, DbClassInfo)
      */
     getClassInfo: function(className, forceScan, cb) {
       var t = this;
@@ -920,7 +944,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
             }
             if (dbMtime && dbMtime.getTime() == sourceStat.mtime.getTime()) {
               if (outputStat.mtime.getTime() >= sourceStat.mtime.getTime()) {
-                t.fireDataEvent("alreadyCompiledClass", { className: className, dbClassInfo: dbClassInfo });
+                await t.fireDataEventAsync("alreadyCompiledClass", { className: className, dbClassInfo: dbClassInfo });
                 return dbClassInfo;
               }
             }
@@ -936,12 +960,12 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
         // Analyse it and collect unresolved symbols and dependencies
         var classFile = new qx.tool.compiler.ClassFile(t, className, library);
-        t.fireDataEvent("compilingClass", { dbClassInfo: dbClassInfo, oldDbClassInfo: oldDbClassInfo, classFile: classFile });
+        await t.fireDataEventAsync("compilingClass", { dbClassInfo: dbClassInfo, oldDbClassInfo: oldDbClassInfo, classFile: classFile });
         await qx.tool.utils.Promisify.call(cb => classFile.load(cb));
 
         // Save it
         classFile.writeDbInfo(dbClassInfo);
-        t.fireDataEvent("compiledClass", { dbClassInfo: dbClassInfo, oldDbClassInfo: oldDbClassInfo, classFile: classFile });
+        await t.fireDataEventAsync("compiledClass", { dbClassInfo: dbClassInfo, oldDbClassInfo: oldDbClassInfo, classFile: classFile });
 
         // Next!
         return dbClassInfo;
@@ -966,10 +990,10 @@ qx.Class.define("qx.tool.compiler.Analyser", {
     },
 
     /**
-     * Gets the translation for the locale and library, caching teh result.
+     * Gets the translation for the locale and library, caching the result.
      * @param library
      * @param locale
-     * @returns {Promise(translation)}
+     * @returns {translation}
      */
     getTranslation: async function(library, locale) {
       var t = this;
@@ -985,81 +1009,122 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
     /**
      * Updates all translations to include all msgids found in code
-     * @param the library to update
-     * @param locales
-     * @param cb
+     * @param appLibrary {qx.tool.compiler.app.Library} the library to update
+     * @param locales {String[]} locales
+     * @param libraries {qx.tool.compiler.app.Library[]} all libraries
+     * @param copyAllMsgs {Boolean} whether to copy everything, or just those that are required
      */
-    updateTranslations: function(library, locales) {
-      const Promisify = qx.tool.utils.Promisify;
-
-      return Promise.all(locales.map(locale => {
-        var translation = new qx.tool.compiler.app.Translation(library, locale);
+    async updateTranslations(appLibrary, locales, libraries, copyAllMsgs) {
+      if (!libraries) {
+        libraries = [];
+      }
+      libraries = libraries.filter(lib => lib != appLibrary);
+      
+      await qx.Promise.all(locales.map(async locale => {
+        let libTranslations = {};
+        await qx.Promise.all(libraries.map(async lib => {
+          var translation = new qx.tool.compiler.app.Translation(lib, locale);
+          await translation.read();
+          libTranslations[lib.toHashCode()] = translation; 
+        }));
+        
+        var translation = new qx.tool.compiler.app.Translation(appLibrary, locale);
         translation.setWriteLineNumbers(this.isWritePoLineNumbers());
-        return translation.read()
-          .then(() => {
-            let unusedEntries = {};
-            for (let msgid in translation.getEntries()) {
-              unusedEntries[msgid] = true;
+        await translation.read();
+        
+        let unusedEntries = {};
+        for (let msgid in translation.getEntries()) {
+          unusedEntries[msgid] = true;
+        }
+        
+        await qx.Promise.all(this.__classes.map(async classname => {
+          let isAppClass = appLibrary.isClass(classname);
+          let classLibrary = !isAppClass && libraries.find(lib => lib.isClass(classname)) || null;
+          if (!isAppClass && !classLibrary) {
+            return;
+          }
+
+          let dbClassInfo = await qx.tool.utils.Promisify.call(cb => this.getClassInfo(classname, cb));
+          if (!dbClassInfo.translations) {
+            return;
+          }
+          
+          function isEmpty(entry) {
+            if (!entry) {
+              return true;
             }
+            if (qx.lang.Type.isArray(entry.msgstr)) {
+              return entry.msgstr.every(value => !value);
+            }
+            return !entry.msgstr;
+          }
 
-            return Promise.all(this.__classes.map(async classname => {
-              if (!classname.startsWith(library.getNamespace())) {
+          dbClassInfo.translations.forEach(function(src) {
+            delete unusedEntries[src.msgid];
+            
+            if (classLibrary) {
+              let entry = translation.getEntry(src.msgid);
+              if (!isEmpty(entry)) {
                 return;
               }
-
-              let dbClassInfo = await Promisify.call(cb => this.getClassInfo(classname, cb));
-              if (!dbClassInfo.translations) {
-                return;
+              let libTranslation = libTranslations[classLibrary.toHashCode()];
+              let libEntry = libTranslation.getEntry(src.msgid);
+              if (isEmpty(libEntry) || copyAllMsgs) {
+                if (!entry) {
+                  entry = translation.getOrCreateEntry(src.msgid);
+                }
+                if (libEntry !== null) {
+                  Object.assign(entry, libEntry);
+                }
+              }
+              return;
+            }
+            
+            let entry = translation.getOrCreateEntry(src.msgid);
+            if (src.msgid_plural) {
+              entry.msgid_plural = src.msgid_plural;
+            }
+            if (!entry.comments) {
+              entry.comments = {};
+            }
+            entry.comments.extracted = src.comment;
+            entry.comments.reference = {};
+            let ref = entry.comments.reference;
+            const fileName = classname.replace(/\./g, "/") + ".js";
+            const fnAddReference = lineNo => {
+              let arr = ref[fileName];
+              if (!arr) {
+                arr = ref[fileName] = [];
               }
 
-              dbClassInfo.translations.forEach(function(src) {
-                var entry = translation.getOrCreateEntry(src.msgid);
-                delete unusedEntries[src.msgid];
-                if (src.msgid_plural) {
-                  entry.msgid_plural = src.msgid_plural;
-                }
-                if (!entry.comments) {
-                  entry.comments = {};
-                }
-                entry.comments.extracted = src.comment;
-                entry.comments.reference = {};
-                let ref = entry.comments.reference;
-                const fileName = classname.replace(/\./g, "/") + ".js";
-                const fnAddReference = lineNo => {
-                  let arr = ref[fileName];
-                  if (!arr) {
-                    arr = ref[fileName] = [];
-                  }
-
-                  if (!arr.includes(src.lineNo)) {
-                    arr.push(lineNo);
-                  }
-                };
-                if (qx.lang.Type.isArray(src.lineNo)) {
-                  src.lineNo.forEach(fnAddReference);
-                } else {
-                  fnAddReference(src.lineNo);
-                }
-              });
-            }))
-              .then(() => {
-                Object.keys(unusedEntries).forEach(msgid => {
-                  var entry = translation.getEntry(msgid);
-                  if (entry) {
-                    if (!entry.comments) {
-                      entry.comments = {};
-                    }
-                    if (Object.keys(entry.comments).length == 0 && entry.msgstr === "") {
-                      translation.deleteEntry(msgid);
-                    } else {
-                      entry.comments.extracted = "NO LONGER USED";
-                      entry.comments.reference = {};
-                    }
-                  }
-                });
-              });
-          })
-          .then(() => translation.write());
+              if (!arr.includes(src.lineNo)) {
+                arr.push(lineNo);
+              }
+            };
+            if (qx.lang.Type.isArray(src.lineNo)) {
+              src.lineNo.forEach(fnAddReference);
+            } else {
+              fnAddReference(src.lineNo);
+            }
+          });
+        }));
+        
+        Object.keys(unusedEntries).forEach(msgid => {
+          var entry = translation.getEntry(msgid);
+          if (entry) {
+            if (!entry.comments) {
+              entry.comments = {};
+            }
+            if (Object.keys(entry.comments).length == 0 && entry.msgstr === "") {
+              translation.deleteEntry(msgid);
+            } else {
+              entry.comments.extracted = "NO LONGER USED";
+              entry.comments.reference = {};
+            }
+          }
+        });
+        
+        await translation.write();
       }));
     },
 
@@ -1113,34 +1178,16 @@ qx.Class.define("qx.tool.compiler.Analyser", {
 
     /**
      * Removes a class from the list of required classes to analyse
-     * @param className
+     * @param classname {String}
      */
     removeClass: function(classname) {
       this.__initialClassesToScan.remove(classname);
     },
 
     /**
-     * Adds a required Locale
-     *
-     * @param locale
-     */
-    addLocale: function(locale) {
-      if (this.__locales.indexOf(locale) < 0) {
-        this.__locales.push(locale);
-      }
-    },
-
-    /**
-     * Returns the list of locale IDs
-     */
-    getLocales: function() {
-      return this.__locales;
-    },
-
-    /**
      * Detects the symbol type, ie class, package, member, etc
      * @param name
-     * @returns {{symbolType,name,clasName?}}
+     * @returns {{symbolType,name,className}?}
      */
     getSymbolType: function(name) {
       var t = this;
@@ -1302,7 +1349,7 @@ qx.Class.define("qx.tool.compiler.Analyser", {
     /**
      * Sets the environment data in the __db.
      * The data beeing set are:
-     *  * a hash of the current environmet values
+     *  * a hash of the current environment values
      *  * the compiler version
      *  * a list of the libraries used
      *
@@ -1322,4 +1369,3 @@ qx.Class.define("qx.tool.compiler.Analyser", {
   }
 });
 
-module.exports = qx.tool.compiler.Analyser;

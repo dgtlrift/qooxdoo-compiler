@@ -24,15 +24,13 @@
 
 var fs = require("fs");
 var babelCore = require("@babel/core");
-require("@qooxdoo/framework");
-var util = require("./util");
+
 var types = require("@babel/types");
 var babylon = require("@babel/parser");
 var async = require("async");
-var pathModule = require("path");
-require("./jsdoc/Parser");
+var pathModule = require("upath");
 
-var log = util.createLog("analyser");
+var log = qx.tool.utils.LogManager.createLog("analyser");
 
 /**
  * Helper method that collapses the MemberExpression into a string
@@ -211,6 +209,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
       vars: {},
       unresolved: {}
     };
+    this.__externals = [];
 
     this.__taskQueueDrains = [];
     this.__taskQueue = async.queue(function(task, cb) {
@@ -223,6 +222,9 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
 
     analyser.getIgnores().forEach(s => this.addIgnore(s));
     this.__globalSymbols = {};
+    this.__privates = {};
+    this.__blockedPrivates = {};
+    this.__privateMangling = analyser.getManglePrivates();
     
     const CF = qx.tool.compiler.ClassFile;
     const addSymbols = arr => arr.forEach(s => this.__globalSymbols[s] = true);
@@ -263,6 +265,9 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
     __sourceFilename: null,
     __taskQueueDrain: null,
     __globalSymbols: null,
+    __privates: null,
+    __blockedPrivates: null,
+    __externals: null,
 	
     _onTaskQueueDrain: function() {
       var cbs = this.__taskQueueDrain;
@@ -363,11 +368,12 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           if (extraPreset[0].plugins.length) {
             config.presets.push(extraPreset);
           }
+          if (this.__privateMangling == "unreadable") {
+            config.blacklist = [ "spec.functionName" ];
+          }
           result = babelCore.transform(src, config);
         } catch (ex) {
-          if (ex._babel) {
-            qx.tool.compiler.Console.log(ex);
-          }
+          qx.tool.compiler.Console.log(ex);
           t.addMarker("compiler.syntaxError", ex.loc, ex.message);
           t.__fatalCompileError = true;
           t._compileDbClassInfo();
@@ -391,7 +397,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
         var pos = className.lastIndexOf(".");
         var name = pos > -1 ? className.substring(pos + 1) : className;
         var outputPath = t.getOutputPath();
-        util.mkParentPath(outputPath, function(err) {
+        qx.tool.utils.Utils.mkParentPath(outputPath, function(err) {
           if (err) {
             callback(err);
             return;
@@ -568,6 +574,9 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           }
         }
       }
+      if (this.__externals.length) {
+        dbClassInfo.externals = this.__externals;
+      }
 
       // Translation
       if (this.__translations.length) {
@@ -643,6 +652,12 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
             t.addIgnore(elem.body);
           });
         }
+        if (jsdoc["@external"]) {
+          jsdoc["@external"].forEach(function(elem) {
+            t.addExternal(elem.body);
+            t._requireAsset(elem.body);
+          });
+        }
         if (jsdoc["@asset"]) {
           jsdoc["@asset"].forEach(function(elem) {
             t._requireAsset(elem.body);
@@ -663,20 +678,24 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           t.addDeclaration(idNode.name);
         }
         t.pushScope(idNode ? idNode.name : null, node, isClassMember);
-        node.params.forEach(param => {
+        
+        function addDecl(param) {
           if (param.type == "AssignmentPattern") {
-            t.addDeclaration(param.left.name);
+            addDecl(param.left);
           } else if (param.type == "RestElement") {
             t.addDeclaration(param.argument.name);
           } else if (param.type == "Identifier") {
             t.addDeclaration(param.name);
           } else if (param.type == "ArrayPattern") {
-            param.elements.forEach(elem => t.addDeclaration(elem.name));
+            param.elements.forEach(elem => addDecl(elem));
           } else if (param.type == "ObjectPattern") {
-            param.properties.forEach(prop => t.addDeclaration(prop.value.name));
+            param.properties.forEach(prop => addDecl(prop.value));
           } else {
             t.addMarker("testForFunctionParameterType", node.loc, param.type);
           }
+        }
+        node.params.forEach(param => {
+          addDecl(param);
         });
         checkNodeJsDocDirectives(node);
       }
@@ -890,13 +909,15 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
         }
       };
 
-      function collectJson(node) {
+      function collectJson(node, isProperties, jsonPath) {
         var result;
+        
         if (node.type == "ObjectExpression") {
           result = {};
+          let nextJsonPath = jsonPath ? jsonPath + "." : "";
           node.properties.forEach(function(prop) {
             var key = prop.key.name;
-            var value = collectJson(prop.value);
+            var value = collectJson(prop.value, isProperties, nextJsonPath + key);
             result[key] = value;
           });
         } else if (node.type == "Literal" ||
@@ -904,13 +925,21 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
             node.type == "BooleanLiteral" ||
             node.type == "NumericLiteral" ||
             node.type == "NullLiteral") {
+          if (typeof node.value == "string") {
+            let isIdentifier = false;
+            if (isProperties && (jsonPath === "apply" || jsonPath === "transform" || jsonPath === "isEqual")) {
+              isIdentifier = true;
+            }
+            node.value = t.encodePrivate(node.value, isIdentifier, node.loc);
+          }
           result = node.value;
         } else if (node.type == "ArrayExpression") {
           result = [];
           node.elements.forEach(function(elem) {
-            result.push(collectJson(elem));
+            result.push(collectJson(elem, isProperties));
           });
         } else if (node.type == "Identifier") {
+          node.name = t.encodePrivate(node.name, true, node.loc);
           result = node.name;
         } else if (node.type == "CallExpression" || node.type == "FunctionExpression" || node.type == "ArrowFunctionExpression") {
           result = new Function("[[ Function ]]");
@@ -918,12 +947,12 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           result = collapseMemberExpression(node);
         } else if (node.type == "UnaryExpression") {
           if (node.operator == "-") {
-            let tmp = collectJson(node.argument);
+            let tmp = collectJson(node.argument, isProperties);
             if (typeof tmp == "number") {
               return tmp * -1;
             }
           } else if (node.operator == "!") {
-            let tmp = collectJson(node.argument);
+            let tmp = collectJson(node.argument, isProperties);
             if (typeof tmp == "boolean") {
               return !tmp;
             }
@@ -1115,10 +1144,10 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
               prop.value.properties.forEach(function(pdNode) {
                 var propName = getKeyName(pdNode.key);
                 var meta = makeMeta("properties", propName, pdNode);
-                var data = collectJson(pdNode.value);
+                var data = collectJson(pdNode.value, true);
                 meta.name = propName;
                 meta.propertyType = "new";
-                [ "refine", "themeable", "event", "inheritable", "apply", "async", "group", "nullable", "init" ]
+                [ "refine", "themeable", "event", "inheritable", "apply", "async", "group", "nullable", "init", "transform" ]
                   .forEach(name => meta[name] = data[name]);
                 if (data.nullable !== undefined) {
                   meta.allowNull = data.nullable;
@@ -1271,7 +1300,15 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           }
         },
         
+        Literal(path) {
+          if (typeof path.node.value == "string") {
+            path.node.value = t.encodePrivate(path.node.value, false, path.loc);
+          }
+        },
+        
         Identifier(path) {
+          path.node.name = t.encodePrivate(path.node.name, true, path.loc);
+           
           // These are AST node types which do not cause undefined references for the identifier,
           // eg ObjectProperty could be `{ abc: 1 }`, and `abc` is not undefined, it is an identifier
           const CHECK_FOR_UNDEFINED = { 
@@ -1322,7 +1359,10 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
             TemplateLiteral: 1,
             AwaitExpression: 1,
             DoWhileStatement: 1,
-            ForOfStatement: 1
+            ForOfStatement: 1,
+            TaggedTemplateExpression: 1,
+            ClassExpression: 1,
+            OptionalCallExpression: 1
           };
           let root = path;
           while (root) {
@@ -1453,6 +1493,13 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
                     log.error("Invalid argument to qx.core.Environment.add: " + arg.value);
                   } else {
                     t.__environmentChecks.provided[arg.value] = true;
+                    if (!arg.value.startsWith(t.__className) &&
+                        !Object.prototype.hasOwnProperty.call(qx.tool.compiler.ClassFile.ENVIRONMENT_CONSTANTS, arg.value)) {
+                      let symbol = t.__library.getSymbolType(arg.value);
+                      if (!symbol || symbol.symbolType != "environment") {
+                        t.addMarker("environment.unreachable", path.node.loc, arg.value);
+                      }
+                    }
                   }
                 }
                 t._requireClass("qx.core.Environment", { usage: "dynamic", location: path.node.loc });
@@ -1491,12 +1538,20 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
                 //  OK in methods - but we have to refer to superclass.methodName directly.  For ordinary
                 //  classes, we need to use constructor.methodName.base.
                 if (t.__definingType == "Mixin") {
-                  expr = expandMemberExpression(t.__classMeta.className + ".$$members." + t.__classMeta.functionName + ".base.call");
-                  // expr = expandMemberExpression("this.constructor.superclass.prototype." + t.__classMeta.functionName + ".call");
+                  expr = types.callExpression(expandMemberExpression("qx.Mixin.baseClassMethod"), [
+                    expandMemberExpression("this.constructor"),
+                    types.identifier(t.__classMeta.className),
+                    types.stringLiteral(t.__classMeta.functionName)
+                  ]);
+                  expr = types.memberExpression(expr, types.identifier("call"));
+                  //expr = expandMemberExpression("qx.Mixin.baseClassMethod(this.constructor, " + t.__classMeta.className + ", \"" + t.__classMeta.functionName + "\").call");
+                  //expr = expandMemberExpression(t.__classMeta.className + ".$$members." + t.__classMeta.functionName + ".base.call");
                 } else if (t.__classMeta.functionName == "$$constructor") {
                   expr = expandMemberExpression(t.__classMeta.superClass + ".constructor.call");
+                } else if (t.__classMeta.className) {
+                  expr = expandMemberExpression(t.__classMeta.className + ".superclass.prototype." + t.__classMeta.functionName + ".call");
                 } else {
-                  expr = expandMemberExpression(t.__classMeta.className + ".prototype." + t.__classMeta.functionName + ".base.call");
+                  expr = expandMemberExpression(t.__classMeta.superClass + ".prototype." + t.__classMeta.functionName + ".call");
                 }
                 if (thisAlias) {
                   path.node.arguments[0] = types.identifier(thisAlias);
@@ -1528,7 +1583,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
                 path.replaceWith(callExpr);
                 
               } else if (name == "this.self") {
-                let expr = expandMemberExpression(t.__className);
+                let expr = expandMemberExpression(t.__classMeta.className);
                 path.replaceWith(expr);
                 
               } else if (name == "this.tr" || name == "this.marktr" || name == "qx.locale.Manager.tr" || name == "qx.locale.Manager.marktr") {
@@ -1581,51 +1636,67 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
           }
         },
 
-        MemberExpression(path) {
-          // regular expression or string property (eg "aa".charCodeAt())
-          if (path.node.object.type == "Literal") {
-            return;
-          }
-
-          // Handle `[ 123 ].blah()` by visiting
-          if (path.node.object.type == "ArrayExpression") {
-            return;
-          }
-
-          // Handle `[ 123 ].blah()` by visiting
-          if (path.node.object.type == "MemberExpression" && path.node.object.object.type == "ArrayExpression") {
-            return;
-          }
-
-          let name = collapseMemberExpression(path.node);
-          if (name.startsWith("(")) {
-            return;
-          }
-          let members = name.split(".");
-
-          // Ignore 'this' references
-          if (members[0] === "this") {
-            return;
-          }
-
-          // Global variable or a local variable?
-          if (t.__globalSymbols[members[0]] || t.hasDeclaration(members[0])) {
-            return;
-          }
-
-          let info = t._requireClass(name, { location: path.node.loc });
-          if (!info || !info.className) {
-            // The code `abc.def.ghi()` will produce a member expression for both `abc.def` (two Identifier's)
-            //  and another for `abc.def` and `.ghi` (MemberExpression + Identifier).  Our logic for detecting
-            //  references and unresolved symbols expects the full `abc.def.ghi` so by excluding MemberExpression's
-            //  where the container is also a MemberExpression means that we skip the incomplete `abc.def`
-            if (path.container.type == "MemberExpression") {
+        MemberExpression: {
+          exit(path) {
+            // regular expression or string property (eg "aa".charCodeAt())
+            if (path.node.object.type == "Literal") {
               return;
             }
-            t.addReference(members, path.node.loc);
+
+            // Handle `[ 123 ].blah()` by visiting
+            if (path.node.object.type == "ArrayExpression") {
+              return;
+            }
+
+            // Handle `[ 123 ].blah()` by visiting
+            if (path.node.object.type == "MemberExpression" && path.node.object.object.type == "ArrayExpression") {
+              return;
+            }
+
+            let name = collapseMemberExpression(path.node);
+            if (name.startsWith("(")) {
+              return;
+            }
+            let members = name.split(".");
+
+            // Ignore 'this' references
+            if (members[0] === "this") {
+              return;
+            }
+
+            // Global variable or a local variable?
+            if (t.__globalSymbols[members[0]] || t.hasDeclaration(members[0])) {
+              return;
+            }
+
+            let info = t._requireClass(name, { location: path.node.loc });
+            if (!info || !info.className) {
+              // The code `abc.def.ghi()` will produce a member expression for both `abc.def` (two Identifier's)
+              //  and another for `abc.def` and `.ghi` (MemberExpression + Identifier).  Our logic for detecting
+              //  references and unresolved symbols expects the full `abc.def.ghi` so by excluding MemberExpression's
+              //  where the container is also a MemberExpression means that we skip the incomplete `abc.def`
+              if (path.container.type == "MemberExpression") {
+                return;
+              }
+              t.addReference(members, path.node.loc);
+            }
           }
         },
 
+        ObjectProperty: {
+          exit(path) {
+            if (this.__privateMangling == "readable") {
+              if (path.node.value.type == "FunctionExpression" && 
+                  path.node.value.id === null) {
+                let functionName = typeof path.node.key.value == "string" ? path.node.key.value : path.node.key.name;
+                if (!qx.tool.compiler.ClassFile.RESERVED_WORDS[functionName]) {
+                  path.node.value.id = types.identifier(functionName);
+                }
+              }
+            }
+          }
+        },
+        
         Property(path) {
           if (t.__classMeta && 
               t.__classMeta._topLevel && 
@@ -1633,7 +1704,19 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
             t.__classMeta.functionName = getKeyName(path.node.key);
             makeMeta(t.__classMeta._topLevel.keyName, t.__classMeta.functionName, path.node);
             path.skip();
+            let functionId = null;
+            if (this.__privateMangling == "readable") {
+              if (path.node.value.type == "FunctionExpression" && path.node.value.id === null) {
+                let functionName = typeof path.node.key.value == "string" ? path.node.key.value : path.node.key.name;
+                if (!qx.tool.compiler.ClassFile.RESERVED_WORDS[functionName]) {
+                  functionId = types.identifier(functionName);
+                }
+              }
+            }
             path.traverse(VISITOR);
+            if (functionId) {
+              path.node.value.id = functionId;
+            }
             t.__classMeta.functionName = null;
           }
         },
@@ -1665,44 +1748,49 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
         FunctionExpression: FUNCTION_DECL_OR_EXPR,
         ArrowFunctionExpression: FUNCTION_DECL_OR_EXPR,
 
-        VariableDeclaration(path) {
-          checkNodeJsDocDirectives(path.node);
-          path.node.declarations.forEach(decl => {
-            // Simple `var x` form
-            if (decl.id.type == "Identifier") {
-              let value = null;
-              if (decl.init) {
-                if (decl.init.type == "Identifier") {
-                  value = decl.init.name;
-                } else if (decl.init.type == "ThisExpression") {
-                  value = "this";
-                }
-              }
-              t.addDeclaration(decl.id.name, value);
-
-            // Object destructuring `var {a,b} = {...}`
-            } else if (decl.id.type == "ObjectPattern") {
-              decl.id.properties.forEach(prop => {
-                if (prop.value.type == "AssignmentPattern") {
-                  t.addDeclaration(prop.value.left.name);
-                } else {
-                  t.addDeclaration(prop.value.name);
-                }
-              });
-
-            // Array destructuring `var [a,b] = [...]`
-            } else if (decl.id.type == "ArrayPattern") {
-              decl.id.elements.forEach(prop => {
-                if (prop) {
-                  if (prop.type == "AssignmentPattern") {
-                    t.addDeclaration(prop.left.name);
-                  } else {
-                    t.addDeclaration(prop.name);
+        VariableDeclaration: {
+          exit(path) {
+            checkNodeJsDocDirectives(path.node);
+            path.node.declarations.forEach(decl => {
+              // Simple `var x` form
+              if (decl.id.type == "Identifier") {
+                let value = null;
+                //decl.id.name = t.encodePrivate(decl.id.name, true, decl.loc);
+                if (decl.init) {
+                  if (decl.init.type == "Identifier") {
+                    value = decl.init.name;
+                  } else if (decl.init.type == "ThisExpression") {
+                    value = "this";
                   }
                 }
-              });
-            }
-          });
+                t.addDeclaration(decl.id.name, value);
+
+              // Object destructuring `var {a,b} = {...}`
+              } else if (decl.id.type == "ObjectPattern") {
+                decl.id.properties.forEach(prop => {
+                  if (prop.value.type == "AssignmentPattern") {
+                    t.addDeclaration(prop.value.left.name);
+                  } else {
+                    t.addDeclaration(prop.value.name);
+                  }
+                });
+
+              // Array destructuring `var [a,b] = [...]`
+              } else if (decl.id.type == "ArrayPattern") {
+                decl.id.elements.forEach(prop => {
+                  if (prop) {
+                    if (prop.type == "AssignmentPattern") {
+                      t.addDeclaration(prop.left.name);
+                    } else if (prop.type == "RestElement") {
+                      t.addDeclaration(prop.argument.name);
+                    } else {
+                      t.addDeclaration(prop.name);
+                    }
+                  }
+                });
+              }
+            });
+          }
         },
         
         ClassDeclaration(path) {
@@ -1916,6 +2004,65 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
         scope.unresolved[name].locations.push(loc);
       }
     },
+    
+    /**
+     * Repeatably encodes a private symbol name, caching the result; ignores non-private symbols
+     * 
+     * @param name {String} symbol name
+     * @param isIdentifier {boolean} whether this is usage as an identifier (and not in a string literal)
+     * @param location {Location} the location of the symbol
+     * @return {String} the encoded name if private, the original name if not private
+     */
+    encodePrivate: function(name, isIdentifier, location) {
+      const DO_NOT_ENCODE = {
+        "__proto__": 1,
+        "__iterator__": 1,
+        "__dirname": 1,
+        "__filename": 1
+      };
+      if (DO_NOT_ENCODE[name] || this.__privateMangling == "off" || !name.startsWith("__") || !name.match(/^[0-9a-z_$]+$/i)) {
+        return name;
+      }
+
+      if (name.indexOf("__P_") > -1) {
+        return name;
+      }
+
+      let coded = this.__privates[name];
+      if (!coded) {
+        // Strings have to be handled differently - we need to mangle them, but only if we
+        //  know for sure that they are private members; to do this, we need to see a symbol
+        //  (identifier) first, to know that the string needs to be mangled
+        if (!isIdentifier) {
+          this.__blockedPrivates[name] = true;
+          return name;
+        }
+        if (this.__blockedPrivates[name]) {
+          this.addMarker("class.blockedMangle", location, name);
+          return name;
+        }
+        let db = this.__analyser.getDatabase();
+        if (!db.manglePrefixes) {
+          db.manglePrefixes = {
+            nextPrefix: 1,
+            classPrefixes: {}
+          };
+        }
+        let prefixes = db.manglePrefixes;
+        let prefix = prefixes.classPrefixes[this.__className];
+        if (!prefix) {
+          prefix = "__P_" + (++prefixes.nextPrefix) + "_";
+          prefixes.classPrefixes[this.__className] = prefix;
+        }
+        
+        if (this.__privateMangling == "readable") {
+          coded = this.__privates[name] = name + prefix + Object.keys(this.__privates).length;
+        } else {
+          coded = this.__privates[name] = prefix + Object.keys(this.__privates).length;
+        }
+      }
+      return coded;
+    },
 
     /**
      * Removes a reference from scope; this should only really be used after scanning is complete
@@ -1932,6 +2079,17 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
     },
 
     /**
+     * Adds an external resource which needs to be loaded early
+     *
+     * @param name {String} name of the symbol
+     */
+    addExternal: function(name) {
+      if (this.__externals.indexOf(name) < 0) {
+        this.__externals.push(name);
+      }
+    },
+    
+    /**
      * Adds an ignored symbol
      * @param name {String} name of the symbol
      */
@@ -1940,15 +2098,17 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
       if (!scope.ignore) {
         scope.ignore = {};
       }
-      var segs = name.split(",");
+      var segs = (name).split(",");
       segs.forEach(name => {
         name = name.trim();
-        if (name.endsWith(".*")) {
-          scope.ignore[name] = name.substring(0, name.length - 2);
-        } else if (name.endsWith("*")) {
-          scope.ignore[name] = name.substring(0, name.length - 1);
-        } else {
-          scope.ignore[name] = true;
+        if (name.length) {
+          if (name.endsWith(".*")) {
+            scope.ignore[name] = name.substring(0, name.length - 2);
+          } else if (name.endsWith("*")) {
+            scope.ignore[name] = name.substring(0, name.length - 1);
+          } else {
+            scope.ignore[name] = true;
+          }
         }
       });
     },
@@ -1956,7 +2116,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
     /**
      * Tests whether a symbol has already been marked as ignore
      * @param name {String} symbol name
-     * @param {Boolean} true if ignored
+     * @return {Boolean} true if ignored
      */
     isIgnored: function(name) {
       for (var tmp = this.__scope; tmp; tmp = tmp.parent) {
@@ -1993,7 +2153,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
      * Adds an environment check made by the class
      *
      * @param name
-     * @param opts {Object?} see _requireClass
+     * @param location {Object?} see _requireClass
      */
     addEnvCheck: function(name, location) {
       var t = this;
@@ -2017,13 +2177,24 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
         dest.construct = true;
       }
       t._requireClass("qx.core.Environment", { location: location });
-      if (qx.tool.compiler.ClassFile.ENVIRONMENT_CONSTANTS[name] === undefined) {
-        var entry = qx.tool.compiler.ClassFile.ENVIRONMENT_CHECKS[name];
-        if (entry && entry.className) {
-          t._requireClass(entry.className, { load: requiredOpts.load, location: location });
-          dest.className = entry.className;
-        } else if (!entry) {
-          t._requireClass(name, { load: requiredOpts.load, location: location });
+      let info = t.__analyser.getSymbolType(name);
+      if (!Object.prototype.hasOwnProperty.call(qx.tool.compiler.ClassFile.ENVIRONMENT_CONSTANTS, name)) {
+        
+        // Generally speaking, we try to have as few load dependencies as possible, and this
+        // means that in a class' `.defer()` we will still allow for runtime loading.  However,
+        // we pull environment checks up as this is a common use case; the problem this is trying
+        // to solve is instances where the feature detection class is loaded after the class which
+        // implements the polyfill, and the polyfill's defer method is then installing a polyfill
+        // when it does not need to (and should not do so).  For example, `qx.bom.client.EcmaScript`
+        // *must* load and have its defer called before the `qx.lang.normalize.Object` class has
+        // it's defer called. 
+        let load = dest.load;
+        if (info && info.symbolType == "environment") {
+          load = true;
+        }
+        t._requireClass(name, { load: load, location: location });
+        if (info && info.symbolType == "environment") {
+          dest.className = info.className;
         }
       }
     },
@@ -2034,7 +2205,6 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
      * @param msgId {String} the marker message ID (@see qx.tool.compiler.Marker)
      * @param pos {Object||null} position map; may contain a Map containing
      *  {line,column?}, or a Map {start:{line,column}, end: {line,column}}.
-     * @param arguments? {Object...} variable argument list, specific to the msgId
      */
     addMarker: function(msgId, pos) {
       msgId = "qx.tool.compiler." + msgId;
@@ -2257,6 +2427,15 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
     }
 
   },
+  
+  defer(statics) {
+    statics.RESERVED_WORDS = {};
+    let str = "abstract  arguments await  boolean break byte  case  catch char  class  const continue debugger  default delete  do " +
+    "double  else  enum eval export extends  false final finally float for function goto  if  implements  import " +
+    "in  instanceof  int interface let  long  native  new null  package private protected public  return  short static "+
+    "super  switch  synchronized  this throw throws  transient true try typeof  var void volatile  while with  yield";
+    str.split(/\s+/).forEach(word => statics.RESERVED_WORDS[word] = true);
+  },
 
   statics: {
     /**
@@ -2273,7 +2452,7 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
     /**
      * Returns the path to the rewritten class file
      *
-     * @param library  {qx.tool.compiler.app.Library}
+     * @param analyser {qx.tool.compiler.Analyser}
      * @param className {String}
      * @returns {String}
      */
@@ -2428,13 +2607,18 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
       "Module",
       "require",
       "module",
-      "process"
+      "process",
+      "setImmediate",
+      "__dirname",
+      "__filename"
     ],
     
     RHINO_GLOBALS: [
       "Packages",
       "java"
     ],
+    
+    RESERVED_WORDS: null,
 
     /**
      * These are the constants which are answered by Qooxdoo qx.core.Environment; we use out own copy here and
@@ -2476,1071 +2660,8 @@ qx.Class.define("qx.tool.compiler.ClassFile", {
       "qx.promise": true,
       "qx.promise.warnings": true,
       "qx.promise.longStackTraces": true
-    },
-
-
-    /**
-     * These are the standard environment checks made by Qooxdoo classes; this list allows us to map between
-     * the short names (eg "os.version") and the actual implementation, which is essential in order to calculate
-     * dependency information.  I have not found anywhere this is listed except in the comments for qx.core.Environment,
-     * and that table is converted into this list by ~/test/get-environment-defaults.html
-     *
-     * Note that our parser does try to observe the environment checks which are provided by each class and
-     * in theory this could be used to generate this list but that requires parsing absolutely every class
-     * in every library every time we compile, including test classes.  So if we have to have a lookup list, this
-     * is it!
-     */
-    ENVIRONMENT_CHECKS: {
-      "browser.documentmode": {
-        "key": "browser.documentmode",
-        "type": "Integer",
-        "className": "qx.bom.client.Browser",
-        "method": "getDocumentMode"
-      },
-      "browser.name": {
-        "key": "browser.name",
-        "type": "String",
-        "className": "qx.bom.client.Browser",
-        "method": "getName"
-      },
-      "browser.quirksmode": {
-        "key": "browser.quirksmode",
-        "type": "Boolean",
-        "className": "qx.bom.client.Browser",
-        "method": "getQuirksMode"
-      },
-      "browser.version": {
-        "key": "browser.version",
-        "type": "String",
-        "className": "qx.bom.client.Browser",
-        "method": "getVersion"
-      },
-      "runtime.name": {
-        "key": "runtime.name",
-        "type": " String ",
-        "className": "qx.bom.client.Runtime",
-        "method": "getName"
-      },
-      "css.borderradius": {
-        "key": "css.borderradius",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getBorderRadius"
-      },
-      "css.borderimage": {
-        "key": "css.borderimage",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getBorderImage"
-      },
-      "css.borderimage.standardsyntax": {
-        "key": "css.borderimage.standardsyntax",
-        "type": "Boolean or null",
-        "className": "qx.bom.client.Css",
-        "method": "getBorderImageSyntax"
-      },
-      "css.boxmodel": {
-        "key": "css.boxmodel",
-        "type": "String",
-        "className": "qx.bom.client.Css",
-        "method": "getBoxModel"
-      },
-      "css.boxshadow": {
-        "key": "css.boxshadow",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getBoxShadow"
-      },
-      "css.gradient.linear": {
-        "key": "css.gradient.linear",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getLinearGradient"
-      },
-      "css.gradient.filter": {
-        "key": "css.gradient.filter",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getFilterGradient"
-      },
-      "css.gradient.radial": {
-        "key": "css.gradient.radial",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getRadialGradient"
-      },
-      "css.gradient.legacywebkit": {
-        "key": "css.gradient.legacywebkit",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getLegacyWebkitGradient"
-      },
-      "css.placeholder": {
-        "key": "css.placeholder",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getPlaceholder"
-      },
-      "css.textoverflow": {
-        "key": "css.textoverflow",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getTextOverflow"
-      },
-      "css.rgba": {
-        "key": "css.rgba",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getRgba"
-      },
-      "css.usermodify": {
-        "key": "css.usermodify",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getUserModify"
-      },
-      "css.appearance": {
-        "key": "css.appearance",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getAppearance"
-      },
-      "css.float": {
-        "key": "css.float",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getFloat"
-      },
-      "css.userselect": {
-        "key": "css.userselect",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getUserSelect"
-      },
-      "css.userselect.none": {
-        "key": "css.userselect.none",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getUserSelectNone"
-      },
-      "css.boxsizing": {
-        "key": "css.boxsizing",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getBoxSizing"
-      },
-      "css.animation": {
-        "key": "css.animation",
-        "type": "Object or null",
-        "className": "qx.bom.client.CssAnimation",
-        "method": "getSupport"
-      },
-      "css.animation.requestframe": {
-        "key": "css.animation.requestframe",
-        "type": "String or null",
-        "className": "qx.bom.client.CssAnimation",
-        "method": "getRequestAnimationFrame"
-      },
-      "css.transform": {
-        "key": "css.transform",
-        "type": "Object or null",
-        "className": "qx.bom.client.CssTransform",
-        "method": "getSupport"
-      },
-      "css.transform.3d": {
-        "key": "css.transform.3d",
-        "type": "Boolean",
-        "className": "qx.bom.client.CssTransform",
-        "method": "get3D"
-      },
-      "css.transition": {
-        "key": "css.transition",
-        "type": "Object or null",
-        "className": "qx.bom.client.CssTransition",
-        "method": "getSupport"
-      },
-      "css.inlineblock": {
-        "key": "css.inlineblock",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getInlineBlock"
-      },
-      "css.opacity": {
-        "key": "css.opacity",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getOpacity"
-      },
-      "css.textShadow": {
-        "key": "css.textShadow",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getTextShadow"
-      },
-      "css.textShadow.filter": {
-        "key": "css.textShadow.filter",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getFilterTextShadow"
-      },
-      "css.alphaimageloaderneeded": {
-        "key": "css.alphaimageloaderneeded",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getAlphaImageLoaderNeeded"
-      },
-      "css.pointerevents": {
-        "key": "css.pointerevents",
-        "type": "Boolean",
-        "className": "qx.bom.client.Css",
-        "method": "getPointerEvents"
-      },
-      "css.flexboxSyntax": {
-        "key": "css.flexboxSyntax",
-        "type": "String or null",
-        "className": "qx.bom.client.Css",
-        "method": "getFlexboxSyntax"
-      },
-      "device.name": {
-        "key": "device.name",
-        "type": "String",
-        "className": "qx.bom.client.Device",
-        "method": "getName"
-      },
-      "device.type": {
-        "key": "device.type",
-        "type": "String",
-        "className": "qx.bom.client.Device",
-        "method": "getType"
-      },
-      "device.pixelRatio": {
-        "key": "device.pixelRatio",
-        "type": "Number",
-        "className": "qx.bom.client.Device",
-        "method": "getDevicePixelRatio"
-      },
-      "device.touch": {
-        "key": "device.touch",
-        "type": "String",
-        "className": "qx.bom.client.Device",
-        "method": "getTouch"
-      },
-      "ecmascript.error.stacktrace": {
-        "key": "ecmascript.error.stacktrace",
-        "type": "String or null",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getStackTrace"
-      },
-      "ecmascript.mutationobserver": {
-        "key": "ecmascript.mutationobserver",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getMutationObserver"
-      },
-      "ecmascript.array.indexof": {
-        "key": "ecmascript.array.indexof",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayIndexOf"
-      },
-      "ecmascript.array.lastindexof": {
-        "key": "ecmascript.array.lastindexof",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayLastIndexOf"
-      },
-      "ecmascript.array.foreach": {
-        "key": "ecmascript.array.foreach",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayForEach"
-      },
-      "ecmascript.array.filter": {
-        "key": "ecmascript.array.filter",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayFilter"
-      },
-      "ecmascript.array.map": {
-        "key": "ecmascript.array.map",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayMap"
-      },
-      "ecmascript.array.some": {
-        "key": "ecmascript.array.some",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArraySome"
-      },
-      "ecmascript.array.find": {
-        "key": "ecmascript.array.find",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayFind"
-      },
-      "ecmascript.array.findIndex": {
-        "key": "ecmascript.array.findIndex",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayFindIndex"
-      },
-      "ecmascript.array.every": {
-        "key": "ecmascript.array.every",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayEvery"
-      },
-      "ecmascript.array.reduce": {
-        "key": "ecmascript.array.reduce",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayReduce"
-      },
-      "ecmascript.array.reduceright": {
-        "key": "ecmascript.array.reduceright",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getArrayReduceRight"
-      },
-      "ecmascript.function.bind": {
-        "key": "ecmascript.function.bind",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getFunctionBind"
-      },
-      "ecmascript.object.keys": {
-        "key": "ecmascript.object.keys",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getObjectKeys"
-      },
-      "ecmascript.date.now": {
-        "key": "ecmascript.date.now",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getDateNow"
-      },
-      "ecmascript.date.parse": {
-        "key": "ecmascript.date.parse",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getDateParse"
-      },
-      "ecmascript.error.toString": {
-        "key": "ecmascript.error.toString",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getErrorToString"
-      },
-      "ecmascript.string.trim": {
-        "key": "ecmascript.string.trim",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getStringTrim"
-      },
-      "ecmascript.string.startsWith": {
-        "key": "ecmascript.string.startsWith",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getStringStartsWith"
-      },
-      "ecmascript.string.endsWith": {
-        "key": "ecmascript.string.endsWith",
-        "type": "Boolean",
-        "className": "qx.bom.client.EcmaScript",
-        "method": "getStringEndsWith"
-      },
-      "engine.name": {
-        "key": "engine.name",
-        "type": "String",
-        "className": "qx.bom.client.Engine",
-        "method": "getName"
-      },
-      "engine.version": {
-        "key": "engine.version",
-        "type": "String",
-        "className": "qx.bom.client.Engine",
-        "method": "getVersion"
-      },
-      "event.mspointer": {
-        "key": "event.mspointer",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getMsPointer"
-      },
-      "event.touch": {
-        "key": "event.touch",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getTouch"
-      },
-      "event.help": {
-        "key": "event.help",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getHelp"
-      },
-      "event.hashchange": {
-        "key": "event.hashchange",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getHashChange"
-      },
-      "event.dispatchevent": {
-        "key": "event.dispatchevent",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getDispatchEvent"
-      },
-      "event.customevent": {
-        "key": "event.customevent",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getCustomEvent"
-      },
-      "event.mouseevent": {
-        "key": "event.mouseevent",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getMouseEvent"
-      },
-      "event.mousecreateevent": {
-        "key": "event.mousecreateevent",
-        "type": "String",
-        "className": "qx.bom.client.Event",
-        "method": "getMouseCreateEvent"
-      },
-      "event.mousewheel": {
-        "key": "event.mousewheel",
-        "type": "Map",
-        "className": "qx.bom.client.Event",
-        "method": "getMouseWheel"
-      },
-      "event.auxclick": {
-        "key": "event.auxclick",
-        "type": "Boolean",
-        "className": "qx.bom.client.Event",
-        "method": "getAuxclickEvent"
-      },
-      "html.audio": {
-        "key": "html.audio",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getAudio"
-      },
-      "html.audio.mp3": {
-        "key": "html.audio.mp3",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getAudioMp3"
-      },
-      "html.audio.ogg": {
-        "key": "html.audio.ogg",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getAudioOgg"
-      },
-      "html.audio.wav": {
-        "key": "html.audio.wav",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getAudioWav"
-      },
-      "html.audio.au": {
-        "key": "html.audio.au",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getAudioAu"
-      },
-      "html.audio.aif": {
-        "key": "html.audio.aif",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getAudioAif"
-      },
-      "html.canvas": {
-        "key": "html.canvas",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getCanvas"
-      },
-      "html.classlist": {
-        "key": "html.classlist",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getClassList"
-      },
-      "html.fullscreen": {
-        "key": "html.fullscreen",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getFullScreen"
-      },
-      "html.geolocation": {
-        "key": "html.geolocation",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getGeoLocation"
-      },
-      "html.storage.local": {
-        "key": "html.storage.local",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getLocalStorage"
-      },
-      "html.storage.session": {
-        "key": "html.storage.session",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getSessionStorage"
-      },
-      "html.storage.userdata": {
-        "key": "html.storage.userdata",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getUserDataStorage"
-      },
-      "html.svg": {
-        "key": "html.svg",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getSvg"
-      },
-      "html.video": {
-        "key": "html.video",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getVideo"
-      },
-      "html.video.h264": {
-        "key": "html.video.h264",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getVideoH264"
-      },
-      "html.video.ogg": {
-        "key": "html.video.ogg",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getVideoOgg"
-      },
-      "html.video.webm": {
-        "key": "html.video.webm",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getVideoWebm"
-      },
-      "html.vml": {
-        "key": "html.vml",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getVml"
-      },
-      "html.webworker": {
-        "key": "html.webworker",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getWebWorker"
-      },
-      "html.filereader": {
-        "key": "html.filereader",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getFileReader"
-      },
-      "html.xpath": {
-        "key": "html.xpath",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getXPath"
-      },
-      "html.xul": {
-        "key": "html.xul",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getXul"
-      },
-      "html.console": {
-        "key": "html.console",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getConsole"
-      },
-      "html.element.contains": {
-        "key": "html.element.contains",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getContains"
-      },
-      "html.element.compareDocumentPosition": {
-        "key": "html.element.compareDocumentPosition",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getCompareDocumentPosition"
-      },
-      "html.element.textContent": {
-        "key": "html.element.textContent",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getTextContent"
-      },
-      "html.image.naturaldimensions": {
-        "key": "html.image.naturaldimensions",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getNaturalDimensions"
-      },
-      "html.history.state": {
-        "key": "html.history.state",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getHistoryState"
-      },
-      "html.selection": {
-        "key": "html.selection",
-        "type": "String",
-        "className": "qx.bom.client.Html",
-        "method": "getSelection"
-      },
-      "html.node.isequalnode": {
-        "key": "html.node.isequalnode",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getIsEqualNode"
-      },
-      "xml.implementation": {
-        "key": "xml.implementation",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getImplementation"
-      },
-      "xml.domparser": {
-        "key": "xml.domparser",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getDomParser"
-      },
-      "xml.selectsinglenode": {
-        "key": "xml.selectsinglenode",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getSelectSingleNode"
-      },
-      "xml.selectnodes": {
-        "key": "xml.selectnodes",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getSelectNodes"
-      },
-      "xml.getelementsbytagnamens": {
-        "key": "xml.getelementsbytagnamens",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getElementsByTagNameNS"
-      },
-      "xml.domproperties": {
-        "key": "xml.domproperties",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getDomProperties"
-      },
-      "xml.attributens": {
-        "key": "xml.attributens",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getAttributeNS"
-      },
-      "xml.createelementns": {
-        "key": "xml.createelementns",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getCreateElementNS"
-      },
-      "xml.createnode": {
-        "key": "xml.createnode",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getCreateNode"
-      },
-      "xml.getqualifieditem": {
-        "key": "xml.getqualifieditem",
-        "type": "Boolean",
-        "className": "qx.bom.client.Xml",
-        "method": "getQualifiedItem"
-      },
-      "html.stylesheet.createstylesheet": {
-        "key": "html.stylesheet.createstylesheet",
-        "type": "Boolean",
-        "className": "qx.bom.client.Stylesheet",
-        "method": "getCreateStyleSheet"
-      },
-      "html.stylesheet.insertrule": {
-        "key": "html.stylesheet.insertrule",
-        "type": "Boolean",
-        "className": "qx.bom.client.Stylesheet",
-        "method": "getInsertRule"
-      },
-      "html.stylesheet.deleterule": {
-        "key": "html.stylesheet.deleterule",
-        "type": "Boolean",
-        "className": "qx.bom.client.Stylesheet",
-        "method": "getDeleteRule"
-      },
-      "html.stylesheet.addimport": {
-        "key": "html.stylesheet.addimport",
-        "type": "Boolean",
-        "className": "qx.bom.client.Stylesheet",
-        "method": "getAddImport"
-      },
-      "html.stylesheet.removeimport": {
-        "key": "html.stylesheet.removeimport",
-        "type": "Boolean",
-        "className": "qx.bom.client.Stylesheet",
-        "method": "getRemoveImport"
-      },
-      "io.maxrequests": {
-        "key": "io.maxrequests",
-        "type": "Integer",
-        "className": "qx.bom.client.Transport",
-        "method": "getMaxConcurrentRequestCount"
-      },
-      "io.ssl": {
-        "key": "io.ssl",
-        "type": "Boolean",
-        "className": "qx.bom.client.Transport",
-        "method": "getSsl"
-      },
-      "io.xhr": {
-        "key": "io.xhr",
-        "type": "String",
-        "className": "qx.bom.client.Transport",
-        "method": "getXmlHttpRequest"
-      },
-      "locale": {
-        "key": "locale",
-        "type": "String",
-        "className": "qx.bom.client.Locale",
-        "method": "getLocale"
-      },
-      "locale.variant": {
-        "key": "locale.variant",
-        "type": "String",
-        "className": "qx.bom.client.Locale",
-        "method": "getVariant"
-      },
-      "locale.default": {
-        "key": "locale.default",
-        "type": "String",
-        "className": "qx.bom.client.Locale",
-        "method": null
-      },
-      "os.name": {
-        "key": "os.name",
-        "type": "String",
-        "className": "qx.bom.client.OperatingSystem",
-        "method": "getName"
-      },
-      "os.version": {
-        "key": "os.version",
-        "type": "String",
-        "className": "qx.bom.client.OperatingSystem",
-        "method": "getVersion"
-      },
-      "os.scrollBarOverlayed": {
-        "key": "os.scrollBarOverlayed",
-        "type": "Boolean",
-        "className": "qx.bom.client.Scroll",
-        "method": "scrollBarOverlayed"
-      },
-      "phonegap": {
-        "key": "phonegap",
-        "type": "Boolean",
-        "className": "qx.bom.client.PhoneGap",
-        "method": "getPhoneGap"
-      },
-      "phonegap.notification": {
-        "key": "phonegap.notification",
-        "type": "Boolean",
-        "className": "qx.bom.client.PhoneGap",
-        "method": "getNotification"
-      },
-      "plugin.divx": {
-        "key": "plugin.divx",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getDivX"
-      },
-      "plugin.divx.version": {
-        "key": "plugin.divx.version",
-        "type": "String",
-        "className": "qx.bom.client.Plugin",
-        "method": "getDivXVersion"
-      },
-      "plugin.flash": {
-        "key": "plugin.flash",
-        "type": "Boolean",
-        "className": "qx.bom.client.Flash",
-        "method": "isAvailable"
-      },
-      "plugin.flash.express": {
-        "key": "plugin.flash.express",
-        "type": "Boolean",
-        "className": "qx.bom.client.Flash",
-        "method": "getExpressInstall"
-      },
-      "plugin.flash.strictsecurity": {
-        "key": "plugin.flash.strictsecurity",
-        "type": "Boolean",
-        "className": "qx.bom.client.Flash",
-        "method": "getStrictSecurityModel"
-      },
-      "plugin.flash.version": {
-        "key": "plugin.flash.version",
-        "type": "String",
-        "className": "qx.bom.client.Flash",
-        "method": "getVersion"
-      },
-      "plugin.gears": {
-        "key": "plugin.gears",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getGears"
-      },
-      "plugin.activex": {
-        "key": "plugin.activex",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getActiveX"
-      },
-      "plugin.skype": {
-        "key": "plugin.skype",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getSkype"
-      },
-      "plugin.pdf": {
-        "key": "plugin.pdf",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getPdf"
-      },
-      "plugin.pdf.version": {
-        "key": "plugin.pdf.version",
-        "type": "String",
-        "className": "qx.bom.client.Plugin",
-        "method": "getPdfVersion"
-      },
-      "plugin.quicktime": {
-        "key": "plugin.quicktime",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getQuicktime"
-      },
-      "plugin.quicktime.version": {
-        "key": "plugin.quicktime.version",
-        "type": "String",
-        "className": "qx.bom.client.Plugin",
-        "method": "getQuicktimeVersion"
-      },
-      "plugin.silverlight": {
-        "key": "plugin.silverlight",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getSilverlight"
-      },
-      "plugin.silverlight.version": {
-        "key": "plugin.silverlight.version",
-        "type": "String",
-        "className": "qx.bom.client.Plugin",
-        "method": "getSilverlightVersion"
-      },
-      "plugin.windowsmedia": {
-        "key": "plugin.windowsmedia",
-        "type": "Boolean",
-        "className": "qx.bom.client.Plugin",
-        "method": "getWindowsMedia"
-      },
-      "plugin.windowsmedia.version": {
-        "key": "plugin.windowsmedia.version",
-        "type": "String",
-        "className": "qx.bom.client.Plugin",
-        "method": "getWindowsMediaVersion"
-      },
-      "qx.allowUrlSettings": {
-        "key": "qx.allowUrlSettings",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.allowUrlVariants": {
-        "key": "qx.allowUrlVariants",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.application": {
-        "key": "qx.application",
-        "type": "String"
-      },
-      "qx.aspects": {
-        "key": "qx.aspects",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug": {
-        "key": "qx.debug",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "qx.debug.databinding": {
-        "key": "qx.debug.databinding",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug.dispose": {
-        "key": "qx.debug.dispose",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug.dispose.level": {
-        "key": "qx.debug.dispose.level",
-        "type": "Integer",
-        "default": "0"
-      },
-      "qx.debug.io": {
-        "key": "qx.debug.io",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug.io.remote": {
-        "key": "qx.debug.io.remote",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug.io.remote.data": {
-        "key": "qx.debug.io.remote.data",
-        "type": "Boolean",
-        "default": "false"
-      },
-      "qx.debug.property.level": {
-        "key": "qx.debug.property.level",
-        "type": "Integer",
-        "default": "0"
-      },
-      "qx.debug.ui.queue": {
-        "key": "qx.debug.ui.queue",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "qx.dynlocale": {
-        "key": "qx.dynlocale",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "qx.dyntheme": {
-        "key": "qx.dyntheme",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "qx.globalErrorHandling": {
-        "key": "qx.globalErrorHandling",
-        "type": "Boolean",
-        "className": "qx.event.GlobalError",
-        "method": null,
-        "default": "true {@link qx.event.GlobalError}"
-      },
-      "qx.mobile.nativescroll": {
-        "key": "qx.mobile.nativescroll",
-        "type": "Boolean",
-        "className": "qx.bom.client.Scroll",
-        "method": "getNativeScroll"
-      },
-      "qx.promise.warnings": {
-        "key": "qx.promise.warnings",
-        "type": "Boolean",
-        "className": "qx.Promise",
-        "method": null
-      },
-      "qx.promise.longStackTraces": {
-        "key": "qx.promise.longStackTraces",
-        "type": "Boolean",
-        "className": "qx.Promise",
-        "method": null
-      },
-      "qx.optimization.basecalls": {
-        "key": "qx.optimization.basecalls",
-        "type": "Boolean"
-      },
-      "qx.optimization.comments": {
-        "key": "qx.optimization.comments",
-        "type": "Boolean"
-      },
-      "qx.optimization.privates": {
-        "key": "qx.optimization.privates",
-        "type": "Boolean"
-      },
-      "qx.optimization.strings": {
-        "key": "qx.optimization.strings",
-        "type": "Boolean"
-      },
-      "qx.optimization.variables": {
-        "key": "qx.optimization.variables",
-        "type": "Boolean"
-      },
-      "qx.optimization.variants": {
-        "key": "qx.optimization.variants",
-        "type": "Boolean"
-      },
-      "qx.revision": {
-        "key": "qx.revision",
-        "type": "String"
-      },
-      "qx.theme": {
-        "key": "qx.theme",
-        "type": "String"
-      },
-      "qx.version": {
-        "key": "qx.version",
-        "type": "String"
-      },
-      "qx.blankpage": {
-        "key": "qx.blankpage",
-        "type": "String"
-      },
-      "module.databinding": {
-        "key": "module.databinding",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "module.logger": {
-        "key": "module.logger",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "module.property": {
-        "key": "module.property",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "module.events": {
-        "key": "module.events",
-        "type": "Boolean",
-        "default": "true"
-      },
-      "html.dataurl": {
-        "key": "html.dataurl",
-        "type": "Boolean",
-        "className": "qx.bom.client.Html",
-        "method": "getDataUrl"
-      },
-      "plugin.pdfjs": {
-        "key": "plugin.pdfjs",
-        "type": "Boolean",
-        "className": "qx.bom.client.Pdfjs",
-        "method": "getPdfjs"
-      }
     }
   }
 
 });
 
-module.exports = qx.tool.compiler.ClassFile;

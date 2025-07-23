@@ -22,13 +22,13 @@
 
 var imageSize = qx.tool.utils.Promisify.promisify(require("image-size"));
 
-var log = require("../util").createLog("resource-manager");
+var log = qx.tool.utils.LogManager.createLog("resource-manager");
 
 qx.Class.define("qx.tool.compiler.resources.ImageLoader", {
   extend: qx.tool.compiler.resources.ResourceLoader,
 
   construct: function() {
-    this.base(arguments, [ ".png", ".gif", ".jpg", ".jpeg" ]);
+    this.base(arguments, [ ".png", ".gif", ".jpg", ".jpeg", ".svg" ]);
   },
 
   members: {

@@ -1,9 +1,14 @@
+# PLEASE NOTE:: This project has since been incorporated into the main Qooxdoo Framework repo at https://github.com/qooxdoo/qooxdoo
+
+
+
 # Qooxdoo Compiler and Command Line Interface
 [![NPM Version][npm-image]][npm-url] 
 [![Gitter][gitter-image]][gitter-url]
-[![Travis Status][travis-image]][travis-url]
 
-Qooxdoo-Compiler is the new compiler and command line interface for Qooxdoo (http://qooxdoo.org) applications, written in 100% Node.JS Javascript it adds these key improvements over the standard python generator:
+Qooxdoo-Compiler is the new compiler and command line interface for Qooxdoo 
+(http://qooxdoo.org) applications, written in 100% Node.JS Javascript it adds 
+these key improvements over the standard python generator:
 
 * Includes Babel for adding ES6 to all Qooxdoo applications 
 * Fast (up to 24x faster) and low resource usage (tiny cache, low CPU usage)
@@ -21,10 +26,16 @@ The included command line utility allows you create, build and manage
 [qooxdoo](http://www.qooxdoo.org) applications (note that Qooxdoo-Compiler now
 incorporates the Qooxdoo-CLI project, which used to be a separate repo).
 
+## Documentation
+
+Detailed documentation on the compiler is available in the dedicated chapter of
+the [qooxdoo Manual](https://qooxdoo.org/documentation/#/development/compiler/).
+
 ## Development status
 
 Beta. The API has mostly stabilized, we will provide a migration path for any
 backward-incompatible changes.
+Api reference of the compiler can be found here: https://qooxdoo.org/qooxdoo-compiler/#
 
 ## Prerequisites
 
@@ -46,20 +57,43 @@ nvm use 8 # or 10
 ## Test drive
 
 For more detailed information about installation and use of the compiler, refer
-to the [documentation](https://www.qooxdoo.org/docs/#/cli/commands). 
+to the [documentation](https://qooxdoo.org/documentation/#/development/compiler/). 
 
-Here's how you can do a quick test drive using `npx` which doesn't install anything
-permanent
+Here's how you can do a quick test drive:
 
 ```bash
-npx qx create myapp --noninteractive
+npm install -g @qooxdoo/compiler
+qx create myapp --noninteractive
 cd myapp
-npx qx package install qooxdoo/qxl.apiviewer
-npx qx package install qooxdoo/qxl.widgetbrowser
-npx qx serve
+qx package install qooxdoo/qxl.apiviewer
+qx package install qooxdoo/qxl.widgetbrowser
+qx serve -S
 ```
 Wait for the message `Web server started, please browse to http://localhost:8080`,
 then open that address in the browser. 
+
+The above test drive uses a global installation of qooxdoo and its compiler. For 
+development of more than one project, you may want an installation of qooxdoo local to the
+project. Local installation is described in the
+[Getting Started documentation](https://qooxdoo.org/documentation/#/development/compiler/?id=installing-locally).
+
+## Run GitHub Version
+
+If always want to have the newest version of the compiler or you want help us in development you can install it directly from the GitHub repo:
+
+Using `npm link`:
+
+```bash
+git clone https://github.com/qooxdoo/qooxdoo-compiler.git
+cd qooxdoo-compiler
+npm install
+./bootstrap-compiler
+./tmp/qx deploy
+npm link
+```
+or just run `bootstrap-compiler` and add either bin/source (or bin/build) onto your PATH and then they have the version of the compiler under development. 
+
+When working on the compiler itself, cd to the compile directory and `run ./tmp/qx compile --watch` (possibly with --target=build if you want to test the build version), that is the fastest way to get it running.
 
 ## Frequently Asked Questions
 
@@ -69,6 +103,21 @@ Qooxdoo Compiler is a BETA RELEASE and of course, you use at your own risk.
 However, it is in use in several major production applications maintained by the
 qooxdoo core developers and therefore you can be fairly confident that we cherish
 stability and every major bug that comes up will be fixed ASAP. 
+
+Because of its beta status, you should upgrade to the newest NPM version with caution.
+A new version is released on each commit to the master branch. The integrity of the
+code is tested before a release. However, you should always test a new release thoroughly
+with your application before using it to build any production code. If you find that
+something is broken, please [create an issue](https://github.com/qooxdoo/qooxdoo-compiler/issues/new/choose).
+
+You can always revert to a previous release by picking a version 
+[on the NPM website](https://www.npmjs.com/package/@qooxdoo/compiler?activeTab=versions)
+and executing 
+
+```bash
+npm install @qooxdoo/compiler@1.0.0-beta.XXXXXX-YYYY
+```
+(replace XXXXX-YYYY by the date string).
 
 ### Gotchas
 
@@ -106,7 +155,7 @@ on Gitter at https://gitter.im/qooxdoo/qooxdoo
 
 [npm-image]: https://badge.fury.io/js/%40qooxdoo%2Fcompiler.svg
 [npm-url]: https://npmjs.org/package/@qooxdoo/compiler
-[travis-image]: https://travis-ci.org/qooxdoo/qooxdoo.svg?branch=master
+[travis-image]: https://travis-ci.org/qooxdoo/qooxdoo-compiler.svg?branch=master
 [travis-url]: https://travis-ci.org/qooxdoo/qooxdoo-compiler
 [gitter-image]: https://badges.gitter.im/qooxdoo/qooxdoo.svg
 [gitter-url]: https://gitter.im/qooxdoo/qooxdoo?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge

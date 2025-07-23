@@ -12,7 +12,7 @@ if (!qx.$$appRoot) {
   if (!bootScriptElement) {
     var scripts = document.getElementsByTagName('script');
     for (var i = 0; i < scripts.length; i++) {
-      if (scripts[i].src && scripts[i].src.match(/boot\.js/)) {
+      if (scripts[i].src && scripts[i].src.match(/index\.js/)) {
         bootScriptElement = scripts[i];
         break;
       }
@@ -62,9 +62,12 @@ for (var k in envinfo)
 
 if (!qx.$$libraries)
   qx.$$libraries = {};
-var libinfo = %{Libinfo};
-for (var k in libinfo)
-  qx.$$libraries[k] = libinfo[k];
+%{Libraries}.forEach(function(ns) {
+   qx.$$libraries[ns] = {
+     sourceUri: qx.$$appRoot + %{SourceUri},
+     resourceUri: qx.$$appRoot + %{ResourceUri}
+   }
+});
 
 qx.$$resources = %{Resources};
 qx.$$translations = %{Translations};
@@ -114,16 +117,11 @@ qx.$$loader = {
     for (var i = 0; i < compressedUris.length; i++) {
       var uri = compressedUris[i].split(":");
       var euri;
-      if (uri.length == 2 && uri[0] in libs) {
-        var prefix = libs[uri[0]][pathName];
-        if (prefix.length && prefix[prefix.length - 1] != '/')
-          prefix += "/";
-        euri = prefix + uri[1];
-      } else if (uri.length > 2) {
+      if (uri.length > 2) {
         uri.shift();
         euri = uri.join(":");
       } else {
-        euri = compressedUris[i];
+        euri = qx.$$appRoot + compressedUris[i];
       }
       if (qx.$$loader.addNoCacheParam) {
         euri += "?nocache=" + Math.random();
@@ -142,7 +140,7 @@ qx.$$loader = {
   on: function(eventType, handler) {
     if (qx.$$loader.applicationHandlerReady) {
       if (window.qx && qx.event && qx.event.handler && qx.event.handler.Application) {
-        let Application = qx.event.handler.Application.$$instance;
+        var Application = qx.event.handler.Application.$$instance;
         if (eventType == "ready" && Application.isApplicationReady()) {
           handler(null);
           return;
@@ -212,16 +210,19 @@ qx.$$loader = {
     });
     allScripts = l.decodeUris(l.urisBefore, "resourceUri");
     if (!l.bootIsInline) {
-      var add = l.decodeUris(l.packages[l.parts[l.boot][0]].uris);
-      Array.prototype.push.apply(allScripts, add);
+      l.parts[l.boot].forEach(function(pkg) {
+        var add = l.decodeUris(l.packages[pkg].uris);
+        Array.prototype.push.apply(allScripts, add);
+      });
     }
 
     function begin() {
       flushScriptQueue(function(){
         // Opera needs this extra time to parse the scripts
         window.setTimeout(function(){
-          var bootPackageHash = l.parts[l.boot][0];
-          l.importPackageData(qx.$$packageData[bootPackageHash] || {});
+          l.parts[l.boot].forEach(function(pkg) {
+            l.importPackageData(qx.$$packageData[pkg] || {});
+          });
           l.signalStartup();
         }, 0);
       });

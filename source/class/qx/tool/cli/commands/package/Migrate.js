@@ -15,9 +15,6 @@
      * Christian Boulanger (info@bibliograph.org, @cboulanger)
 
 ************************************************************************ */
-require("../Package");
-
-require("@qooxdoo/framework");
 const process = require("process");
 const path = require("upath");
 const semver = require("semver");
@@ -143,7 +140,7 @@ qx.Class.define("qx.tool.cli.commands.package.Migrate", {
           for (let key in obj) {
             if (obj[key]) {
               s += "      " + key + "\n";
-            }  
+            }
           }
         }
         if (needFix) {
@@ -176,7 +173,7 @@ qx.Class.define("qx.tool.cli.commands.package.Migrate", {
               .transform("info.version", version => {
                 let coerced = semver.coerce(version);
                 if (coerced === null) {
-                  qx.tool.compiler.Console.warn(`*** Version string '${version}' could not be interpretted as semver, changing to 1.0.0`);
+                  qx.tool.compiler.Console.warn(`*** Version string '${version}' could not be interpreted as semver, changing to 1.0.0`);
                   return "1.0.0";
                 }
                 return String(coerced);
@@ -193,19 +190,19 @@ qx.Class.define("qx.tool.cli.commands.package.Migrate", {
             }
           }
         }
-        // update dependencies
+        // check framework and compiler dependencies
+        // if none are given in the Manifest, use the present framework and compiler
         const compiler_version = qx.tool.compiler.Version.VERSION;
-        const compiler_range = manifestModel.getValue("requires.@qooxdoo/compiler");
+        const compiler_range = manifestModel.getValue("requires.@qooxdoo/compiler") || compiler_version;
         const framework_version = await this.getLibraryVersion(await this.getGlobalQxPath());
-        const framework_range = manifestModel.getValue("requires.@qooxdoo/framework");
+        const framework_range = manifestModel.getValue("requires.@qooxdoo/framework") || framework_version;
 
         if (
-          !(compiler_range && framework_range) ||
           !semver.satisfies(compiler_version, compiler_range) ||
           !semver.satisfies(framework_version, framework_range)) {
           needFix = true;
           if (announceOnly) {
-            qx.tool.compiler.Console.warn("*** Framework and/or compiler dependencies in Manifest need to be updated.");
+            qx.tool.compiler.Console.warn(`*** Mismatch between installed framework version (${framework_version}) and/or compiler version (${compiler_version}) and the declared dependencies in the Manifest.`);
           } else {
             manifestModel
               .setValue("requires.@qooxdoo/compiler", "^" + compiler_version)
@@ -224,8 +221,8 @@ qx.Class.define("qx.tool.cli.commands.package.Migrate", {
         let compileJsonFilename = path.join(process.cwd(), "compile.json");
         let replaceInFiles = [{
           files: compileJsonFilename,
-          from: "qx/browser",
-          to: "@qooxdoo/qx/browser"
+          from: "\"qx/browser\"",
+          to: "\"@qooxdoo/qx/browser\""
         }];
         await this.migrate([compileJsonFilename], replaceInFiles);
       }
@@ -240,7 +237,7 @@ qx.Class.define("qx.tool.cli.commands.package.Migrate", {
       self.migrationInProcess = false;
       if (needFix) {
         if (announceOnly) {
-          qx.tool.compiler.Console.error(`*** Please run 'qx package migrate' to apply the changes. If you don't want this, downgrade to a previous version of the compiler.`);
+          qx.tool.compiler.Console.error(`*** Try executing 'qx package migrate' to apply the changes. Alternatively, upgrade or downgrade framework and/or compiler to match the library dependencies.`);
           process.exit(1);
         }
         qx.tool.compiler.Console.info("Migration completed.");

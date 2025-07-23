@@ -16,12 +16,10 @@
 
 ************************************************************************ */
 
-require("@qooxdoo/framework");
+
 
 const CLIEngine = require("eslint").CLIEngine;
 const fs = qx.tool.utils.Promisify.fs;
-
-require("./Command");
 
 qx.Class.define("qx.tool.cli.commands.Lint", {
   extend: qx.tool.cli.commands.Command,
@@ -42,18 +40,20 @@ qx.Class.define("qx.tool.cli.commands.Lint", {
           },
           "use-eslintrc": {
             describe: "Use the .eslintrc file for configuration, if it exists",
-            default: true
+            default: true,
+            type: "boolean"
           },
           "cache": {
             describe: "operate only on changed files",
-            default: false
+            default: false,
+            type: "boolean"
           },
           "warnAsError": {
             alias: "w",
             describe: "handle warnings as error"
           },
-          "config": {
-            alias : "c",
+          "print-config": {
+            alias : "p",
             describe: "print the eslint configuration"
           },
           "format": {

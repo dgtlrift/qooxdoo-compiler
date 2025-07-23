@@ -21,14 +21,14 @@
  * *********************************************************************** */
 
 const path = require("upath");
-require("@qooxdoo/framework");
+
 
 qx.Class.define("qx.tool.compiler.app.Application", {
   extend: qx.core.Object,
 
   /**
    * Constructor
-   * @param classname[, classname...] {String|String[]}
+   * @param classname {String|String[]} [, classname...]
    */
   construct: function(classname) {
     this.base(arguments);
@@ -56,7 +56,7 @@ qx.Class.define("qx.tool.compiler.app.Application", {
       check: [ "browser", "rhino", "node" ],
       apply: "_applyType"
     },
-
+    
     /**
      * Environment property map
      */
@@ -144,7 +144,16 @@ qx.Class.define("qx.tool.compiler.app.Application", {
      * Default is true.
      */
     publish: {
-      type: "Boolean",
+      check: "Boolean",
+      init: true
+    },
+
+    /**
+     * Whether this app is to be deployed
+     * Default is true.
+     */
+    deploy: {
+      check: "Boolean",
       init: true
     },
 
@@ -153,7 +162,7 @@ qx.Class.define("qx.tool.compiler.app.Application", {
      * application (false)
      */
     standalone: {
-      type: "Boolean",
+      check: "Boolean",
       init: true
     },
 
@@ -197,7 +206,7 @@ qx.Class.define("qx.tool.compiler.app.Application", {
     },
 
     /**
-     * Template file used to create boot.js; note that this is changed when the `type` property
+     * Template file used to create index.js; note that this is changed when the `type` property
      * is changed
      */
     loaderTemplate: {
@@ -233,8 +242,6 @@ qx.Class.define("qx.tool.compiler.app.Application", {
 
     /**
      * Calculates the dependencies of the classes to create a load order
-     *
-     * @param classes
      */
     calcDependencies: function() {
       var t = this;
@@ -448,6 +455,16 @@ qx.Class.define("qx.tool.compiler.app.Application", {
           var part = classData.best||bootPart;
           part.classes.push(classname);
           classData.actual = part;
+          if (info.externals) {
+            if (part.externals === undefined) {
+              part.externals = [];
+            }
+            info.externals.forEach(external => {
+              if (part.externals.indexOf(external) < 0) {
+                part.externals.push(external);
+              }
+            });
+          }
         }
         allDeps.push(classname);
         deferDeps.forEach(function(depName) {
@@ -758,7 +775,7 @@ qx.Class.define("qx.tool.compiler.app.Application", {
     getClassName: function() {
       return this.__classes[0];
     },
-
+    
     /**
      * Returns the classes required for the application
      * @returns {String[]}
@@ -857,7 +874,6 @@ qx.Class.define("qx.tool.compiler.app.Application", {
     _applyType: function(value, oldValue) {
       var loader = path.join(this.getTemplatePath(), "loader", "loader-" + this.getType() + ".tmpl.js");
       this.setLoaderTemplate(loader);
-      this.setTheme(null);
     },
 
     /**
@@ -917,5 +933,3 @@ qx.Class.define("qx.tool.compiler.app.Application", {
     }
   }
 });
-
-module.exports = qx.tool.compiler.app.Application;

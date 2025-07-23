@@ -18,11 +18,12 @@
  *    Authors:
  *      * John Spackman (john.spackman@zenesis.com, @johnspackman)
  *
+ * 
  * *********************************************************************** */
-
-require("@qooxdoo/framework");
-
-require("./Logger");
+ 
+/**
+ * @require(qx.tool.utils.Logger)
+ */
 
 var LEVELS = [ "trace", "debug", "info", "warn", "error", "fatal" ];
 
@@ -76,6 +77,18 @@ qx.Class.define("qx.tool.utils.LogManager", {
 
   statics: {
     __instance: null,
+    
+    /**
+     * create a logger for a specified category
+     * 
+     * @param {*} categoryName 
+     */
+    createLog: function(categoryName) {
+      if (!categoryName) {
+        categoryName = "generic";
+      }
+      return this.getInstance().getLogger(categoryName);
+    },
 
     /**
      * Returns the global instance
@@ -173,4 +186,3 @@ qx.Class.define("qx.tool.utils.LogManager", {
 });
 
 
-module.exports = qx.tool.utils.LogManager;

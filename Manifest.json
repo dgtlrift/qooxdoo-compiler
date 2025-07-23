@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/qooxdoo/qooxdoo-compiler/master/source/resource/qx/tool/schema/Manifest-1-0-0.json",
+  "$schema": "https://qooxdoo.org/schema/Manifest-1-0-0.json",
   "info": {
     "name": "@qooxdoo/qooxdoo-compiler",
     "summary": "The new fast JavaScript Compiler for Qooxdoo",
@@ -20,7 +20,7 @@
         "email": "Henner.Kollmann.gmx.de"
       }
     ],
-    "version": "1.0.0-beta"
+    "version": "1.0.4"
   },
   "provides": {
     "namespace": "qxcompiler",
@@ -30,8 +30,7 @@
     "translation": "source/translation"
   },
   "requires": {
-    "@qooxdoo/framework": "^6.0.0-alpha",
-    "@qooxdoo/compiler": "^1.0.0-beta",
-    "qooxdoo/qxl.apiviewer": "^1.0.0-beta.2"
+    "@qooxdoo/framework": "^6.0.0-beta",
+    "@qooxdoo/compiler": "^1.0.0-beta"
   }
 }

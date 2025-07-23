@@ -2,20 +2,18 @@
   "name": "@qooxdoo/compiler",
   "description": "node.js based replacement for the Qooxdoo python toolchain",
   "main": "index.js",
-  "scripts": {
-    "test": "cross-os test.os",
-    "prepare": "npm update --no-save @qooxdoo/framework",
-    "prepack": "npm update --save @qooxdoo/framework && npm shrinkwrap"
+  "bin": {
+    "qx": "bin/deploy/qx"
   },
-  "cross-os": {
-    "test.os": {
-      "win32": "test\\test.win32.cmd",
-      "linux": "test/test.linux.sh",
-      "darwin": "test/test.linux.sh"
-    }
+  "scripts": {
+    "devtools": "node source/resource/qx/tool/bin/build-devtools",
+    "website": "node source/resource/qx/tool/bin/build-website",
+    "pretest": "node bootstrap-compiler --upgrade-framework",
+    "test": "node ./bin/build/qx lint --warnAsError && node ./bin/build/qx --block-global-framework test",
+    "prepack": "node ./bin/known-good/qx deploy --clean"
   },
   "author": "John Spackman (johnspackman), Christian Boulanger (cboulanger), Henner Kollmann (hkollmann), and others",
-  "version": "1.0.0-beta",
+  "version": "1.0.4",
   "keywords": [
     "qooxdoo",
     "compiler",
@@ -30,76 +28,83 @@
     "url": "https://github.com/qooxdoo/qooxdoo-compiler/issues"
   },
   "license": "MIT",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "Manifest.json",
+    "lib/compiler",
+    "lib/resource",
+    "bin/deploy"
+  ],
   "dependencies": {
-    "@babel/core": "^7.5.5",
-    "@babel/generator": "^7.5.5",
-    "@babel/parser": "^7.5.5",
-    "@babel/plugin-proposal-nullish-coalescing-operator": "^7.7.5",
-    "@babel/plugin-proposal-optional-chaining": "^7.7.5",
-    "@babel/plugin-transform-block-scoping": "^7.5.5",
-    "@babel/plugin-transform-react-jsx": "^7.3.0",
-    "@babel/polyfill": "^7.4.0",
-    "@babel/preset-env": "^7.5.5",
-    "@babel/preset-react": "^7.0.0",
-    "@babel/preset-typescript": "^7.3.3",
-    "@babel/traverse": "^7.5.5",
-    "@babel/types": "^7.5.5",
-    "@octokit/rest": "^15.18.1",
-    "@qooxdoo/eslint-config-jsdoc-disable": "^1.0.1",
-    "@qooxdoo/eslint-config-qx": "1.2.1",
-    "@qooxdoo/eslint-plugin-qx": "^1.2.4",
-    "@qooxdoo/framework": "^6.0.0-beta",
-    "ajv": "^6.10.2",
+    "@babel/core": "^7.12.10",
+    "@babel/generator": "^7.12.11",
+    "@babel/parser": "^7.12.11",
+    "@babel/plugin-proposal-nullish-coalescing-operator": "^7.12.1",
+    "@babel/plugin-proposal-optional-chaining": "^7.12.7",
+    "@babel/plugin-transform-block-scoping": "^7.12.12",
+    "@babel/plugin-transform-react-jsx": "^7.12.12",
+    "@babel/polyfill": "^7.12.1",
+    "@babel/preset-env": "^7.12.11",
+    "@babel/preset-react": "^7.12.10",
+    "@babel/preset-typescript": "^7.12.7",
+    "@babel/traverse": "^7.12.12",
+    "@babel/types": "^7.12.12",
+    "@octokit/rest": "^18.0.15",
+    "@qooxdoo/eslint-config-jsdoc-disable": "^1.0.3",
+    "@qooxdoo/eslint-config-qx": "^2.0.1",
+    "@qooxdoo/eslint-plugin-qx": "^1.2.21",
+    "@qooxdoo/framework": "^6.0.1",
+    "ajv": "^6.12.6",
     "app-module-path": "^2.2.0",
-    "async": "^2.6.1",
-    "better-ajv-errors": "^0.6.4",
-    "chokidar": "^2.1.2",
-    "cldr": "^5.3.0",
+    "async": "^2.6.3",
+    "babel-eslint": "^10.1.0",
+    "better-ajv-errors": "^0.6.7",
+    "chokidar": "^3.5.1",
+    "cldr": "^5.8.0",
     "columnify": "^1.5.4",
     "console-control-strings": "^1.1.0",
-    "dot": "^1.1.2",
+    "dot": "^1.1.3",
     "download": "^6.0.0",
     "es6-promise-pool": "^2.5.0",
     "eslint": "^5.16.0",
+    "eslint-plugin-jsdoc": "^30.7.13",
     "express": "^4.17.1",
-    "fontkit": "^1.8.0",
+    "fontkit": "^1.8.1",
     "gauge": "^2.7.4",
     "get-value": "^3.0.1",
-    "github-api": "^3.2.2",
-    "glob": "^7.1.4",
-    "image-size": "^0.6.3",
-    "inquirer": "^6.5.1",
-    "jsonlint": "^1.6.2",
+    "github-api": "^3.4.0",
+    "glob": "^7.1.6",
+    "image-size": "^0.8.3",
+    "inquirer": "^7.3.3",
+    "json-stable-stringify": "^1.0.1",
+    "jsonlint": "^1.6.3",
     "jstransformer-dot": "^0.1.2",
     "metalsmith": "^2.3.0",
     "metalsmith-layouts": "^2.3.1",
     "metalsmith-markdown": "^1.3.0",
-    "mkdirp": "^0.5.1",
-    "node-fetch": "^1.7.3",
-    "node-sass": "^4.13.1",
-    "object-hash": "^2.0.1",
+    "mkdirp": "^1.0.4",
+    "node-fetch": "^2.6.0",
+    "object-hash": "^2.1.1",
     "ps-tree": "^1.2.0",
-    "replace-in-file": "^4.1.2",
-    "rimraf": "^2.6.2",
-    "semver": "^5.7.0",
-    "set-value": "^3.0.1",
+    "replace-in-file": "^5.0.0",
+    "rimraf": "^3.0.2",
+    "sass": "^1.35.1",
+    "semver": "^7.3.4",
+    "set-value": "^4.0.1",
     "showdown": "^1.9.1",
     "source-map": "^0.5.7",
-    "tmp": "0.0.33",
+    "tmp": "0.2.1",
     "uglify-es": "^3.3.9",
     "unset-value": "^1.0.0",
-    "upath": "^1.1.0",
-    "update-notifier": "^2.5.0",
-    "xml2js": "^0.4.19",
-    "yargs": "^15.0.2"
+    "upath": "^1.2.0",
+    "update-notifier": "^4.1.3",
+    "xml2js": "^0.4.23",
+    "yargs": "^15.4.1"
   },
   "devDependencies": {
-    "bats": "^1.1.0",
-    "cross-os": "^1.2.2",
-    "mocha": "^6.2.0",
-    "runscript": "^1.4.0",
-    "source-map-support": "^0.5.13",
-    "tape": "^4.11.0"
+    "source-map-support": "^0.5.19",
+    "tape": "^5.1.1"
   },
   "eslintConfig": {
     "env": {
@@ -107,11 +112,23 @@
     },
     "extends": [
       "@qooxdoo/qx"
-    ]
+    ],
+    "parserOptions": {
+      "ecmaVersion": 2017
+    },
+    "rules": {
+      "@qooxdoo/qx/no-illegal-private-usage": "off",
+      "jsdoc/require-jsdoc": "off",
+      "jsdoc/require-param": "off",
+      "jsdoc/require-returns-type": "off",
+      "indent": [
+        "error",
+        2,
+        {
+          "SwitchCase": 1
+        }
+      ]
+    }
   },
-  "engine": "node >= 8",
-  "bin": {
-    "qx": "qx"
-  },
-  "preferGlobal": true
+  "engine": "node >= 8"
 }

@@ -15,10 +15,6 @@
      * Christian Boulanger (info@bibliograph.org, @cboulanger)
 
 ************************************************************************ */
-
-require("../Package");
-require("@qooxdoo/framework");
-
 const download = require("download");
 const fs = qx.tool.utils.Promisify.fs;
 const path = require("upath");
@@ -42,9 +38,9 @@ qx.Class.define("qx.tool.cli.commands.package.Install", {
         command: "install [uri[@release_tag]]",
         describe: `installs the latest compatible release of package (as per Manifest.json). Use "-r <release tag>" or @<release tag> to install a particular release.
         examples: 
-           * qx contrib install name: Install latest published version
-           * qx contrib install name@v0.0.2: Install version 0.0.2,
-           * qx contrib install name@master: Install current master branch from github`,
+           * qx package install name: Install latest published version
+           * qx package install name@v0.0.2: Install version 0.0.2,
+           * qx package install name@master: Install current master branch from github`,
         builder: {
           "release" : {
             alias: "r",
@@ -282,7 +278,7 @@ qx.Class.define("qx.tool.cli.commands.package.Install", {
       if (!release_data) {
         throw new qx.tool.utils.Utils.UserError(`'${repo_name}' has no release '${tag_name}'.`);
       }
-      // TODO: the path in the cache data should be the path to the library containing Manifest.json, not to the Manifest.json itself
+      // TO DO: the path in the cache data should be the path to the library containing Manifest.json, not to the Manifest.json itself
       for (let {path:manifest_path} of release_data.manifests) {
         if (package_path && (path.dirname(manifest_path) !== package_path)) {
           // if a path component exists, only install the library in this path

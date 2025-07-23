@@ -36,6 +36,9 @@
   } else {
     window.document = document = {
         readyState: "ready",
+        currentScript: {
+          src: new (require("url").URL)('file:' + __filename).href
+        },        
         createEvent: function() {
           return {
             initCustomEvent: function() {}
@@ -72,16 +75,18 @@
   }
   var envinfo = %{EnvSettings};
   for (var k in envinfo) {
-    qx.$$environment[k] = envinfo[k];
+    if (qx.$$environment[k] === undefined) {
+       qx.$$environment[k] = envinfo[k];
+    }
   }
 
   if (!qx.$$libraries) {
     qx.$$libraries = {};
   }
-  var libinfo = %{Libinfo};
-  for (var k in libinfo) { 
-    qx.$$libraries[k] = libinfo[k]; 
-  }
+  %{Libraries}.forEach(ns => qx.$$libraries[ns] = {
+      sourceUri: qx.$$appRoot + %{SourceUri},
+      resourceUri: qx.$$appRoot + %{ResourceUri}
+   });
 
   var isDebug = qx.$$environment["qx.debugLoader"];
   var log = isDebug ? console.log : function() { };
@@ -113,6 +118,7 @@
   qx.$$loader = {
       parts : %{Parts},
       packages : %{Packages},
+      urisBefore : %{UrisBefore},
       boot : %{Boot},
       closureParts : %{ClosureParts},
       delayDefer: false,
@@ -126,15 +132,10 @@
         for (var i = 0; i < compressedUris.length; i++) {
           var uri = compressedUris[i].split(":");
           var euri;
-          if (uri.length == 2 && uri[0] in libs) {
-            if (uri[0] == "__out__")
-              euri = "./" + uri[1];
-            else
-              euri = pathName + "/" + uri[1];
-          } else if (uri[0] == "__external__") {
+          if (uri[0] == "__external__") {
             continue;
           } else {
-            euri = compressedUris[i];
+            euri = qx.$$appRoot + compressedUris[i];
           }
           %{DecodeUrisPlug}
           uris.push(qxloadPrefixUrl + euri);
@@ -144,10 +145,18 @@
 
       init : function() {
         var l = qx.$$loader;
+        var t = this;
 
-        var bootPackageHash=l.parts[l.boot][0];
-        this.loadScriptList(l.decodeUris(l.packages[l.parts[l.boot][0]].uris));
-        l.importPackageData(qx.$$packageData[bootPackageHash] || {});
+        var allScripts = l.decodeUris(l.urisBefore, "resourceUri");
+        t.loadScriptList(allScripts);
+    
+        l.parts[l.boot].forEach(function(pkg) {
+          t.loadScriptList(l.decodeUris(l.packages[pkg].uris));
+        });
+
+        l.parts[l.boot].forEach(function(pkg) {
+          l.importPackageData(qx.$$packageData[pkg] || {});
+        });
         qx.$$domReady = true;
         l.signalStartup();
       },
@@ -156,7 +165,8 @@
         list.forEach(function(uri) {
           var f = loaderMethod(uri);
           if (typeof f === "function") {
-            window[f.name] = f;
+            var s = f.name === ""?path.basename(uri, ".js"):f.name;
+            window[s] = f;
           }
         });
       },

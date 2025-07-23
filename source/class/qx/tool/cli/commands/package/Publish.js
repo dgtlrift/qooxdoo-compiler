@@ -15,13 +15,10 @@
      * Christian Boulanger (info@bibliograph.org, @cboulanger)
 
 ************************************************************************ */
-require("../Package");
-
-require("@qooxdoo/framework");
 const fs = require("fs");
 const path = require("upath");
 const process = require("process");
-const octokit = require("@octokit/rest")();
+const { Octokit } = require("@octokit/rest");
 const semver = require("semver");
 const inquirer = require("inquirer");
 const glob = require("glob");
@@ -146,9 +143,8 @@ qx.Class.define("qx.tool.cli.commands.package.Publish", {
       if (!token) {
         throw new qx.tool.utils.Utils.UserError(`GitHub access token required.`);
       }
-      octokit.authenticate({
-        type: "token",
-        token
+      const octokit = new Octokit({
+        auth: token
       });
 
       // create index file first?
@@ -233,7 +229,7 @@ qx.Class.define("qx.tool.cli.commands.package.Publish", {
       let result;
       let topics;
       try {
-        result = await octokit.repos.listTopics({owner,
+        result = await octokit.repos.getAllTopics({owner,
           repo});
         topics = result.data.names;
       } catch (e) {
@@ -324,7 +320,7 @@ qx.Class.define("qx.tool.cli.commands.package.Publish", {
       // commit and push
       try {
         await this.run("git", ["add", "--all"]);
-        await this.run("git", ["commit", `-m "${message}"`]);
+        await this.run("git", ["commit", `-m "${message}"`, "--allow-empty"]);
         await this.run("git", ["push"]);
         let release_data = {
           owner,
@@ -347,13 +343,14 @@ qx.Class.define("qx.tool.cli.commands.package.Publish", {
       const topic = "qooxdoo-package";
       if (!topics.includes(topic)) {
         topics.push(topic);
-        await octokit.repos.replaceTopics({owner,
+        await octokit.repos.replaceAllTopics({owner,
           repo,
           names:topics});
         if (!argv.quiet) {
           qx.tool.compiler.Console.info(`Added GitHub topic '${topic}'.`);
         }
       }
+      await this.run("git", ["pull"]);
     },
 
     /**

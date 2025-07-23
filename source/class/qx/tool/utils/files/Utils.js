@@ -20,16 +20,15 @@
  *
  * *********************************************************************** */
 
-const fs = qx.tool.utils.Promisify.fs;
+const fs = require("fs");
 const path = require("path");
-const util = require("../../compiler/util");
-require("@qooxdoo/framework");
 const rimraf = require("rimraf");
 
-const stat = util.promisify(fs.stat);
-const mkdir = util.promisify(fs.mkdir);
-const readdir = util.promisify(fs.readdir);
-const rename = util.promisify(fs.rename);
+const {promisify} = require("util");
+const stat = promisify(fs.stat);
+const mkdir = promisify(fs.mkdir);
+const readdir = promisify(fs.readdir);
+const rename = promisify(fs.rename);
 
 qx.Class.define("qx.tool.utils.files.Utils", {
   extend: qx.core.Object,
@@ -77,7 +76,7 @@ qx.Class.define("qx.tool.utils.files.Utils", {
             p = Promise.resolve();
           }
           return p.then(() => readdir(from)
-            .then(files => Promise.all(files.map(file => t.sync(from + "/" + file, to + "/" + file, filter)))));
+            .then(files => Promise.all(files.map(file => t.sync(path.join(from, file), path.join(to, file), filter)))));
         } else if (statFrom.isFile()) {
           return qx.Promise.resolve(filter ? filter(from, to) : true)
             .then(result => result && t.copyFile(from, to));
@@ -118,16 +117,15 @@ qx.Class.define("qx.tool.utils.files.Utils", {
      * Copies a file
      * @param from {String} path to copy from
      * @param to {String} path to copy to
-     * @param cb(err) {Function}
      * @async
      */
     copyFile: function(from, to) {
       return new Promise((resolve, reject) => {
-        util.mkParentPath(to, function() {
+        qx.tool.utils.Utils.mkParentPath(to, function() {
           var rs = fs.createReadStream(from, { flags: "r", encoding: "binary" });
           var ws = fs.createWriteStream(to, { flags: "w", encoding: "binary" });
           rs.on("end", function() {
-            resolve();
+            resolve(from, to);
           });
           rs.on("error", reject);
           ws.on("error", reject);
@@ -236,7 +234,7 @@ qx.Class.define("qx.tool.utils.files.Utils", {
     /**
      * Normalises the path and corrects the case of the path to match what is actually on the filing system
      *
-     * @param fsPath {String} the filename to normalise
+     * @param dir {String} the filename to normalise
      * @returns {String} the new path
      * @async
      */
@@ -329,4 +327,3 @@ qx.Class.define("qx.tool.utils.files.Utils", {
   }
 });
 
-module.exports = qx.tool.utils.files.Utils;

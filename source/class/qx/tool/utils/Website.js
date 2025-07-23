@@ -29,29 +29,31 @@ const layouts = require("metalsmith-layouts");
 const markdown = require("metalsmith-markdown");
 //const filenames = require("metalsmith-filenames");
 //var permalinks = require("metalsmith-permalinks");
-const sass = require("node-sass");
+/**
+ * @external(qx/tool/loadsass.js)
+ * @ignore(loadSass)
+ */
+/* global loadSass */
+const sass = loadSass();
 const chokidar = require("chokidar");
 
 // config
 dot.templateSettings.strip = false;
 
-/**
- * @ignore(qx.tool.$$resourceDir)
- */
 qx.Class.define("qx.tool.utils.Website", {
   extend: qx.core.Object,
 
   statics: {
-    APP_NAMESPACE: "apps",
-    SOURCE_DIR: path.join(qx.tool.$$resourceDir, "website"),
-    TARGET_DIR: path.join(qx.tool.$$resourceDir, "website/build")
+    APP_NAMESPACE: "apps"
   },
 
   construct: function(options={}) {
     qx.core.Object.apply(this, arguments);
     const self = qx.tool.utils.Website;
-    this.initSourceDir(self.SOURCE_DIR);
-    this.initTargetDir(self.TARGET_DIR);
+    let p = qx.util.ResourceManager.getInstance().toUri("qx/tool/website/.gitignore");
+    p = path.dirname(p);
+    this.initSourceDir(p);
+    this.initTargetDir(path.join(p, "build"));
     this.initAppsNamespace(self.APP_NAMESPACE);
 
     for (let key of Object.getOwnPropertyNames(options)) {

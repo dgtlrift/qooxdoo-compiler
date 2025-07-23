@@ -19,13 +19,6 @@
  *      * John Spackman (john.spackman@zenesis.com, @johnspackman)
  *
  * *********************************************************************** */
-
-require("@qooxdoo/framework");
-require("./ChildControlParser");
-require("./ParamParser");
-require("./ReturnParser");
-require("./ThrowsParser");
-
 const showdown = require("showdown");
 
 /**
@@ -41,13 +34,22 @@ qx.Class.define("qx.tool.compiler.jsdoc.Parser", {
      * consist of the name, the body of the JSDoc entry, and optional, key-specific parsed data (where supported)
      */
     parseComment: function(comment) {
+      /* 
+         JSDoc starts with /**
+         babel parses this to * - the comment starting end ending is striped
+         So whe have to test for valid JSDoc comment.
+      */
+      comment = comment.trim();
+      if (!(comment.startsWith("* ") || comment.startsWith("*\n") || comment.startsWith("*\r"))) {
+        return {};
+      }
       var current = { name: "@description", body: "" };
       var cmds = [ current ];
 
       // special handling for code section
-      comment = comment.replace(/@([^@}\n\r]*)@/g, "<code>$1</code>");
+      comment = comment.replace(/`([^`]*)`/gm, "<code>$1</code>");
       // Strip optional leading * 
-      comment = comment.replace(/^\s*\*/mg, "");
+      comment = comment.replace(/^[ \t]*\*/mg, "");
       // special handling for as markdown lists - * in qooxdoo
       comment = comment.replace(/^\s*\*/mg, "*");
       comment = comment.replace(/^\s*\*\*\*\*/mg, "\t\t\t*");
@@ -99,7 +101,14 @@ qx.Class.define("qx.tool.compiler.jsdoc.Parser", {
           try {
             cmd.body = converter.makeHtml(cmd.body);
           } catch (e) {
-            qx.tool.compiler.Console.error(`Markdown conversion error: "${e.message}" found in \n${cmd.body.trim()}`);
+            if (qx.tool.compiler.Console.getInstance().isVerbose()) {
+              qx.tool.compiler.Console.info(`
+              Markdown conversion problem: 
+              Error "${e.message}" was thrown parsing 
+              "${cmd.body.trim()}". 
+              Please review your doc comments for compatibility with Markdown syntax.
+              `);
+            }
           }
         } else {
           // If the body is surrounded by parameters, remove them
